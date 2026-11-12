@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidBranchDoc(data) {
+      return data.branch is string && 
+             data.branch.size() > 0 && 
+             data.branch.size() <= 64 &&
+             (data.branch == 'PAULO AFONSO' || data.branch == 'DELMIRO');
+    }
+
+    function isValidConfigDoc(data) {
+      return data.id is string && data.id.size() > 0 && data.id.size() <= 64;
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Branch Inventory Data
+    match /branches/{branchId} {
+      allow read: if isValidId(branchId);
+      allow create: if isValidId(branchId) && isValidBranchDoc(incoming());
+      allow update: if isValidId(branchId) && isValidBranchDoc(incoming());
+      allow delete: if false;
+    }
+
+    // Global Application Config
+    match /appConfig/{configId} {
+      allow read: if isValidId(configId);
+      allow create: if isValidId(configId) && isValidConfigDoc(incoming());
+      allow update: if isValidId(configId) && isValidConfigDoc(incoming());
+      allow delete: if false;
+    }
+
+    // Connection test document
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+  }
+}

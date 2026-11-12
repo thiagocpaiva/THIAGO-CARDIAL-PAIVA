@@ -1,0 +1,103 @@
+{
+  "entities": {
+    "branchData": {
+      "title": "Branch Inventory Data",
+      "description": "Inventory catalogs, counts and session state for a branch",
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Branch name (PAULO AFONSO or DELMIRO)",
+          "enum": ["PAULO AFONSO", "DELMIRO"]
+        },
+        "materials": {
+          "type": "array",
+          "description": "Materials catalog list"
+        },
+        "freezers": {
+          "type": "array",
+          "description": "Freezers catalog list"
+        },
+        "equipments": {
+          "type": "array",
+          "description": "Equipments catalog list"
+        },
+        "materialCounts": {
+          "type": "object",
+          "description": "Daily counts of materials"
+        },
+        "equipmentCounts": {
+          "type": "object",
+          "description": "Daily counts of equipments"
+        },
+        "uncataloguedEquipments": {
+          "type": "array",
+          "description": "Uncatalogued items found during count"
+        },
+        "lastCountBackup": {
+          "type": "object",
+          "description": "Last saved count backup"
+        },
+        "activeContadorSession": {
+          "type": "object",
+          "description": "Active counter lock session"
+        },
+        "frozenReportText": {
+          "type": "string",
+          "description": "Frozen report preview text"
+        },
+        "recontagemSelectedIds": {
+          "type": "object",
+          "description": "Selected item IDs for recount"
+        },
+        "recontagemMaterialCounts": {
+          "type": "object",
+          "description": "Recount materials count entries"
+        },
+        "recontagemEquipmentCounts": {
+          "type": "object",
+          "description": "Recount equipments count entries"
+        },
+        "emailRecipients": {
+          "type": "string",
+          "description": "Configured email recipients text"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["branch"]
+    },
+    "appConfig": {
+      "title": "Global Application Config",
+      "description": "Global user accounts, email settings and logs",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Config document identifier"
+        },
+        "users": {
+          "type": "array",
+          "description": "Registered application users"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last update"
+        }
+      },
+      "required": ["id"]
+    }
+  },
+  "firestore": {
+    "/branches/{branchId}": {
+      "schema": "branchData",
+      "description": "Branch-specific inventory data and daily counts"
+    },
+    "/appConfig/{configId}": {
+      "schema": "appConfig",
+      "description": "Global application configuration and user profiles"
+    }
+  }
+}

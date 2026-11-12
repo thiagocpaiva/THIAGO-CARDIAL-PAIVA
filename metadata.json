@@ -1,0 +1,7 @@
+
+{
+  "name": "Gestão de Materiais & Equipamentos",
+  "description": "Contagem diária de estoque para materiais e equipamentos com controle de acesso, clonagem de contagem e envio de relatórios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

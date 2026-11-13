@@ -67,6 +67,7 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
   const [sendResult, setSendResult] = useState<{ success: boolean; message: string } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [feedbackToast, setFeedbackToast] = useState<string | null>(null);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
 
 
 
@@ -145,8 +146,9 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
 
   const activeReportPreview = frozenReportText !== null ? frozenReportText : reportText;
 
-  // Ao pressionar o botão "Enviar Estoque Selecionado por E-mail", abre o programa padrão de e-mail do dispositivo para envio do relatório de contagem
-  const handleSendEmail = () => {
+  // Ao pressionar o botão "Enviar Estoque Selecionado por E-mail", sincroniza com o Firebase e abre o programa padrão de e-mail do dispositivo para envio do relatório de contagem
+  const handleSendEmail = async () => {
+    if (isSendingEmail) return;
     setErrorMessage(null);
 
     const primaryTo = (defaultSenderEmail || '').trim();
@@ -206,10 +208,20 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
       smtpConfig: serverEmailConfig,
     }).catch(() => {});
 
-    // Registra que a contagem foi enviada por e-mail:
-    // Conforme regra: somente após o envio do estoque por e-mail o acesso total das funcionalidades
-    // é liberado para o usuário Master, e os demais contadores ficam impedidos de alterar a contagem
-    markCountAsSent();
+    // Registra e aguarda a sincronização completa com o Firebase antes de abrir o cliente de e-mail:
+    // Conforme regra: somente após o envio do estoque por e-mail todos os dados do contador são sincronizados com o Firebase
+    // e o acesso total das funcionalidades é liberado para o usuário Master.
+    setIsSendingEmail(true);
+    try {
+      const syncRes = await markCountAsSent();
+      if (!syncRes.synced && syncRes.message) {
+        showToast(syncRes.message);
+      } else {
+        showToast('Dados da contagem sincronizados com o Firebase!');
+      }
+    } finally {
+      setIsSendingEmail(false);
+    }
 
     // Abre o programa padrão de e-mail do dispositivo com destinatário no Para (To), copiados no Cc, assunto e relatório de contagem no corpo
     let mailtoUrl = `mailto:${encodeURIComponent(effectiveTo)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(activeReportPreview)}`;
@@ -491,10 +503,11 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
         {/* Botão para Enviar Estoque Selecionado por E-mail */}
         <button
           onClick={handleSendEmail}
-          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+          disabled={isSendingEmail}
+          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
         >
           <Send className="w-4 h-4 stroke-[3]" />
-          <span>Enviar Estoque Selecionado por E-mail</span>
+          <span>{isSendingEmail ? 'Sincronizando e abrindo e-mail...' : 'Enviar Estoque Selecionado por E-mail'}</span>
         </button>
 
         {/* EXIGÊNCIA 8: Botão para atualizar os dados do campo "Prévia do Relatório", logo abaixo do botão "Enviar Estoque Selecionado por e-mail" */}

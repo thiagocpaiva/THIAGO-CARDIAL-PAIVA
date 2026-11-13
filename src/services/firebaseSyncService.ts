@@ -19,6 +19,8 @@ import {
   LastCountBackup, 
   ContadorSession,
   CountStartedBy,
+  EmailSettings,
+  ServerEmailConfig,
   StockUser, 
   UnitBranch 
 } from '../types/inventory';
@@ -109,11 +111,14 @@ export interface BranchSyncPayload {
   activeContadorSession?: ContadorSession | null;
   countStartedBy?: CountStartedBy | null;
   isReportSent?: boolean;
+  countDate?: string;
   frozenReportText?: string | null;
   recontagemSelectedIds?: Record<string, boolean>;
   recontagemMaterialCounts?: Record<string, MaterialDailyEntry>;
   recontagemEquipmentCounts?: Record<string, EquipmentDailyEntry>;
   emailRecipients?: string;
+  emailSettings?: EmailSettings;
+  serverEmailConfig?: ServerEmailConfig;
   updatedAt?: string;
 }
 
@@ -128,20 +133,59 @@ export const getBranchDocId = (branch: UnitBranch): string => {
 };
 
 /**
- * Busca dados da base diretamente no servidor Firestore
+ * Busca dados da base diretamente no servidor Firestore (sem manter listener contínuo)
  */
 export async function fetchBranchData(branch: UnitBranch): Promise<BranchSyncPayload | null> {
   const docId = getBranchDocId(branch);
+  const docRef = doc(db, 'branches', docId);
   try {
-    const docRef = doc(db, 'branches', docId);
-    const snap = await getDoc(docRef);
+    const snap = await getDocFromServer(docRef);
     if (snap.exists()) {
       return snap.data() as BranchSyncPayload;
     }
     return null;
   } catch (error) {
-    console.warn(`Erro ao buscar dados da base ${branch}:`, error);
+    try {
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        return snap.data() as BranchSyncPayload;
+      }
+      return null;
+    } catch (innerError) {
+      console.warn(`Erro ao buscar dados da base ${branch}:`, error, innerError);
+      return null;
+    }
+  }
+}
+
+/**
+ * Busca lista de usuários diretamente no servidor Firestore (sem manter listener contínuo)
+ */
+export async function fetchUsersFromFirestore(): Promise<StockUser[] | null> {
+  const docRef = doc(db, 'appConfig', 'users');
+  try {
+    const snap = await getDocFromServer(docRef);
+    if (snap.exists()) {
+      const data = snap.data() as AppConfigPayload;
+      if (data.users && Array.isArray(data.users)) {
+        return data.users;
+      }
+    }
     return null;
+  } catch (error) {
+    try {
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const data = snap.data() as AppConfigPayload;
+        if (data.users && Array.isArray(data.users)) {
+          return data.users;
+        }
+      }
+      return null;
+    } catch (innerError) {
+      console.warn('Erro ao buscar usuários no Firestore:', error, innerError);
+      return null;
+    }
   }
 }
 
@@ -209,6 +253,17 @@ export function subscribeToUsers(
   );
 }
 
+export function isQuotaExceededError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error ?? '');
+  const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code) : '';
+  return (
+    code === 'resource-exhausted' ||
+    msg.includes('resource-exhausted') ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('Quota exceeded')
+  );
+}
+
 // Salva dados da base no Firestore, limpando recursivamente valores undefined
 export async function pushBranchToFirestore(branch: UnitBranch, payload: Partial<BranchSyncPayload>): Promise<void> {
   const docId = getBranchDocId(branch);
@@ -223,6 +278,10 @@ export async function pushBranchToFirestore(branch: UnitBranch, payload: Partial
     const cleanedData = removeUndefinedDeep(rawData);
     await setDoc(docRef, cleanedData, { merge: true });
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn(`Cota diária do Firestore excedida ao salvar ${path}. Aguardando redefinição da cota diária.`);
+      throw new Error('Quota limit exceeded: Free daily write units per project exceeded.');
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
@@ -239,6 +298,10 @@ export async function pushUsersToFirestore(users: StockUser[]): Promise<void> {
       updatedAt: new Date().toISOString()
     }, { merge: true });
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      console.warn(`Cota diária do Firestore excedida ao salvar ${path}. Aguardando redefinição da cota diária.`);
+      throw new Error('Quota limit exceeded: Free daily write units per project exceeded.');
+    }
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }

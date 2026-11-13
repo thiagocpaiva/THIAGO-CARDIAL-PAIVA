@@ -42,6 +42,18 @@
           "type": "object",
           "description": "Active counter lock session"
         },
+        "countStartedBy": {
+          "type": "object",
+          "description": "Counter user who initiated today's count"
+        },
+        "isReportSent": {
+          "type": "boolean",
+          "description": "Whether the stock report email has been sent for today's count"
+        },
+        "countDate": {
+          "type": "string",
+          "description": "Local YYYY-MM-DD date of the active count state"
+        },
         "frozenReportText": {
           "type": "string",
           "description": "Frozen report preview text"
@@ -61,6 +73,14 @@
         "emailRecipients": {
           "type": "string",
           "description": "Configured email recipients text"
+        },
+        "emailSettings": {
+          "type": "object",
+          "description": "Branch email recipient list and default email"
+        },
+        "serverEmailConfig": {
+          "type": "object",
+          "description": "Branch email server configuration"
         },
         "updatedAt": {
           "type": "string",

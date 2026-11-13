@@ -81,7 +81,12 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
     isContadorActive,
     isAnyBaseCountInProgress,
     activeBranch,
+    syncMasterDataToFirebase,
+    hasPendingMasterSync,
+    lastFirebaseSyncAt,
   } = useInventory();
+
+  const [isSyncingFirebase, setIsSyncingFirebase] = useState(false);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'materiais' | 'freezers' | 'equipamentos' | 'nao_cadastrados'>(initialFilterType || 'all');
@@ -1189,26 +1194,73 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
             <h2 className="text-base font-extrabold text-slate-900">
               Gestão de Cadastros da Base
             </h2>
+            {isMaster && (
+              <p className="text-[11px] font-semibold mt-0.5">
+                {hasPendingMasterSync ? (
+                  <span className="text-amber-700">
+                    Alterações locais pendentes — clique em "Sincronizar Dados" para enviar ao Firebase.
+                  </span>
+                ) : lastFirebaseSyncAt ? (
+                  <span className="text-emerald-700">
+                    Última sincronização com Firebase às {lastFirebaseSyncAt}.
+                  </span>
+                ) : (
+                  <span className="text-slate-500">
+                    Sincronização manual das bases com o Firebase.
+                  </span>
+                )}
+              </p>
+            )}
           </div>
         </div>
 
-        {/* Botão Zerar Base (apenas Master) */}
+        {/* Botões Master: Sincronizar Dados e Zerar Todos os Cadastros */}
         {isMaster && (
-          <button
-            onClick={() => {
-              if (isContadorActive) {
-                showToast('Existe usuário realizando contagem no momento.');
-                return;
-              }
-              setConfirmClearOpen(true);
-            }}
-            disabled={isContadorActive}
-            className="px-3 py-2 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
-            title="Apagar todos os cadastros"
-          >
-            <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-            <span>Zerar Todos os Cadastros</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={async () => {
+                if (isSyncingFirebase) return;
+                if (isAnyBaseCountInProgress || isContadorActive) {
+                  showToast('Existe contagem em andamento.');
+                  return;
+                }
+                setIsSyncingFirebase(true);
+                try {
+                  const res = await syncMasterDataToFirebase();
+                  showToast(res.message);
+                } finally {
+                  setIsSyncingFirebase(false);
+                }
+              }}
+              disabled={isSyncingFirebase || isAnyBaseCountInProgress || isContadorActive}
+              className={`px-3.5 py-2 border rounded-xl text-xs font-extrabold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 disabled:opacity-50 shadow-xs ${
+                hasPendingMasterSync
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-400'
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500'
+              }`}
+              title="Sincronizar integralmente todas as bases (PAULO AFONSO, DELMIRO) e Usuários com o Firebase"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncingFirebase ? 'animate-spin' : ''}`} />
+              <span>{isSyncingFirebase ? 'Sincronizando...' : 'Sincronizar Dados'}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                if (isContadorActive) {
+                  showToast('Existe usuário realizando contagem no momento.');
+                  return;
+                }
+                setConfirmClearOpen(true);
+              }}
+              disabled={isContadorActive}
+              className="px-3 py-2 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+              title="Apagar todos os cadastros"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+              <span>Zerar Todos os Cadastros</span>
+            </button>
+          </div>
         )}
       </div>
 

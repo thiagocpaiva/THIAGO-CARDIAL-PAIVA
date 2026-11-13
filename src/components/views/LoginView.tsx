@@ -13,6 +13,7 @@ export const LoginView: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [pendingMaster, setPendingMaster] = useState<{ registration: string; pass: string; name: string } | null>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
 
@@ -34,8 +35,9 @@ export const LoginView: React.FC = () => {
     }
   }, [isMasterUser]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoggingIn) return;
     setErrorMessage('');
 
     if (!cleanReg) {
@@ -43,49 +45,60 @@ export const LoginView: React.FC = () => {
       return;
     }
 
-    if (!matchedUser) {
-      setErrorMessage('Matrícula não encontrada.');
-      return;
-    }
-
-    if (matchedUser.status !== 'ativo') {
-      setErrorMessage('Usuário inativo. Contate o Administrador Master.');
-      return;
-    }
-
-    // EXIGÊNCIA: Se for Master, verifica a senha antes de abrir a tela de escolha da base
-    if (isMasterUser) {
-      if (!password.trim()) {
-        setErrorMessage('Por favor, digite a senha de acesso do Usuário Master.');
-        return;
-      }
-      if (matchedUser.password !== password.trim()) {
-        setErrorMessage('Senha incorreta para Usuário Master.');
+    // EXIGÊNCIA: Se for Master já identificado localmente, solicita senha antes da escolha da base;
+    // a validação final de senha, status e matrícula ocorre sempre contra os dados do Firebase dentro de login().
+    if (matchedUser) {
+      if (matchedUser.status !== 'ativo') {
+        // Permite revalidar no Firestore em caso de reativação recente antes de bloquear
+        setIsLoggingIn(true);
+        try {
+          const checkResult = await login(cleanReg, password);
+          if (!checkResult.success) {
+            setErrorMessage(checkResult.message || 'Usuário inativo. Contate o Administrador Master.');
+          }
+        } finally {
+          setIsLoggingIn(false);
+        }
         return;
       }
 
-      // EXIGÊNCIA 4: Na tela login, ao ser logado por um usuário Master, aparecer tela com dois botões "PAULO AFONSO" e "DELMIRO" para ser selecionado qual base deverá ser exibida.
-      setPendingMaster({
-        registration: cleanReg,
-        pass: password.trim(),
-        name: matchedUser.name,
-      });
-      return;
+      if (isMasterUser) {
+        if (!password.trim()) {
+          setErrorMessage('Por favor, digite a senha de acesso do Usuário Master.');
+          return;
+        }
+        setPendingMaster({
+          registration: cleanReg,
+          pass: password.trim(),
+          name: matchedUser.name,
+        });
+        return;
+      }
     }
 
-    // Usuário Contador acessa diretamente sua base selecionada no cadastro
-    const result = login(cleanReg, password);
-    if (!result.success) {
-      setErrorMessage(result.message || 'Erro ao realizar login.');
+    // Usuário Contador (ou matrícula recém-criada em outro dispositivo) sincroniza e autentica diretamente via Firebase
+    setIsLoggingIn(true);
+    try {
+      const result = await login(cleanReg, password);
+      if (!result.success) {
+        setErrorMessage(result.message || 'Erro ao realizar login.');
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
-  const handleSelectBranch = (branch: UnitBranch) => {
-    if (!pendingMaster) return;
-    const result = login(pendingMaster.registration, pendingMaster.pass, branch);
-    if (!result.success) {
-      setErrorMessage(result.message || 'Erro ao realizar login.');
-      setPendingMaster(null);
+  const handleSelectBranch = async (branch: UnitBranch) => {
+    if (!pendingMaster || isLoggingIn) return;
+    setIsLoggingIn(true);
+    try {
+      const result = await login(pendingMaster.registration, pendingMaster.pass, branch);
+      if (!result.success) {
+        setErrorMessage(result.message || 'Erro ao realizar login.');
+        setPendingMaster(null);
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -126,28 +139,30 @@ export const LoginView: React.FC = () => {
             <div className="space-y-3">
               <button
                 type="button"
+                disabled={isLoggingIn}
                 onClick={() => handleSelectBranch('PAULO AFONSO')}
-                className="w-full p-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-sm shadow-md active:scale-[0.98] transition-all flex items-center justify-between cursor-pointer border border-amber-400"
+                className="w-full p-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-60 text-slate-950 font-black text-sm shadow-md active:scale-[0.98] transition-all flex items-center justify-between cursor-pointer border border-amber-400"
               >
                 <div className="flex items-center gap-2.5">
                   <div className="w-8 h-8 rounded-xl bg-white/30 flex items-center justify-center">
                     <MapPin className="w-4 h-4 text-slate-950" />
                   </div>
-                  <span className="text-base tracking-wide">PAULO AFONSO</span>
+                  <span className="text-base tracking-wide">{isLoggingIn ? 'SINCRONIZANDO...' : 'PAULO AFONSO'}</span>
                 </div>
                 <ArrowRight className="w-5 h-5 stroke-[3]" />
               </button>
 
               <button
                 type="button"
+                disabled={isLoggingIn}
                 onClick={() => handleSelectBranch('DELMIRO')}
-                className="w-full p-4 rounded-2xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-slate-800 hover:to-slate-700 text-white font-black text-sm shadow-md active:scale-[0.98] transition-all flex items-center justify-between cursor-pointer border border-slate-700"
+                className="w-full p-4 rounded-2xl bg-gradient-to-r from-slate-900 to-slate-800 hover:from-slate-800 hover:to-slate-700 disabled:opacity-60 text-white font-black text-sm shadow-md active:scale-[0.98] transition-all flex items-center justify-between cursor-pointer border border-slate-700"
               >
                 <div className="flex items-center gap-2.5">
                   <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center">
                     <MapPin className="w-4 h-4 text-amber-400" />
                   </div>
-                  <span className="text-base tracking-wide">DELMIRO</span>
+                  <span className="text-base tracking-wide">{isLoggingIn ? 'SINCRONIZANDO...' : 'DELMIRO'}</span>
                 </div>
                 <ArrowRight className="w-5 h-5 stroke-[3]" />
               </button>
@@ -311,9 +326,10 @@ export const LoginView: React.FC = () => {
             {/* Botão Entrar */}
             <button
               type="submit"
-              className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-sm rounded-2xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-2 cursor-pointer"
+              disabled={isLoggingIn}
+              className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-60 text-slate-950 font-black text-sm rounded-2xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-2 cursor-pointer"
             >
-              <span>{matchedUser && !isMasterUser ? 'Acessar como Contador' : 'Entrar no Sistema'}</span>
+              <span>{isLoggingIn ? 'Sincronizando e entrando...' : (matchedUser && !isMasterUser ? 'Acessar como Contador' : 'Entrar no Sistema')}</span>
               <ArrowRight className="w-4 h-4 stroke-[3]" />
             </button>
 

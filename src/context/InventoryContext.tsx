@@ -176,6 +176,21 @@ export const getBranchStorageKey = (branch: UnitBranch, subKey: string) => {
   return `choppstock_${code}_${subKey}`;
 };
 
+const hasMaterialEntryQuantity = (m?: Partial<MaterialDailyEntry> | null): boolean => {
+  if (!m) return false;
+  return (
+    (m.disponivel || 0) > 0 ||
+    (m.danificado || 0) > 0 ||
+    (m.barrilCheio || 0) > 0 ||
+    (m.barrilVazio || 0) > 0 ||
+    (m.barrilEmRota || 0) > 0 ||
+    (m.co2Cheio || 0) > 0 ||
+    (m.co2Mexido || 0) > 0 ||
+    (m.co2Vazio || 0) > 0 ||
+    (m.co2EmRota || 0) > 0
+  );
+};
+
 const STORAGE_KEYS = {
   MATERIALS: 'choppstock_materials_v8',
   FREEZERS: 'choppstock_freezers_v8',
@@ -344,18 +359,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return null;
   });
 
-  // Sessão de Contador isolada por base
-  const [activeContadorSession, setActiveContadorSession] = useState<ContadorSession | null>(() => {
-    const saved = localStorage.getItem(getBranchStorageKey(activeBranch, 'active_contador_session')) || localStorage.getItem(STORAGE_KEYS.ACTIVE_CONTADOR_SESSION);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.userId) return parsed;
-      } catch {}
-    }
-    return null;
-  });
-
   // Registro do Contador que iniciou a contagem na base atual
   const [countStartedBy, setCountStartedBy] = useState<CountStartedBy | null>(() => {
     return loadInitialBranchData<CountStartedBy | null>(activeBranch, 'count_started_by', null, []);
@@ -366,50 +369,64 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return loadInitialBranchData<boolean>(activeBranch, 'is_report_sent', false, []);
   });
 
-  // Estado em tempo real das duas bases para controle de concorrência global (nas duas bases)
+  const readBranchInitialStatus = (b: UnitBranch) => {
+    try {
+      const storedDay = localStorage.getItem(getBranchStorageKey(b, 'calendar_day'));
+      if (storedDay && storedDay !== getTodayKey()) {
+        return { countStartedBy: null, isReportSent: false, activeContadorSession: null, hasCounts: false };
+      }
+      const csbRaw = localStorage.getItem(getBranchStorageKey(b, 'count_started_by'));
+      const irsRaw = localStorage.getItem(getBranchStorageKey(b, 'is_report_sent'));
+      const sessRaw = localStorage.getItem(getBranchStorageKey(b, 'active_contador_session'));
+      const matsRaw = localStorage.getItem(getBranchStorageKey(b, 'today_materials'));
+      const eqsRaw = localStorage.getItem(getBranchStorageKey(b, 'today_equipments'));
+      const uncatRaw = localStorage.getItem(getBranchStorageKey(b, 'today_uncatalogued'));
+
+      const parsedCsb: CountStartedBy | null = csbRaw ? JSON.parse(csbRaw) : null;
+      const parsedIrs: boolean = irsRaw ? JSON.parse(irsRaw) : false;
+      const parsedMats: Record<string, MaterialDailyEntry> = matsRaw ? JSON.parse(matsRaw) : {};
+      const parsedEqs: Record<string, EquipmentDailyEntry> = eqsRaw ? JSON.parse(eqsRaw) : {};
+      const parsedUncat: UncataloguedEquipment[] = uncatRaw ? JSON.parse(uncatRaw) : [];
+
+      const hasCounts =
+        Object.values(parsedMats).some(hasMaterialEntryQuantity) ||
+        Object.keys(parsedEqs).length > 0 ||
+        parsedUncat.length > 0;
+
+      // Só mantém sessão ativa se houver contagem iniciada (ao menos 1 item inserido) e relatório ainda não enviado
+      const parsedSess: ContadorSession | null =
+        !parsedIrs && (Boolean(parsedCsb) || hasCounts) && sessRaw ? JSON.parse(sessRaw) : null;
+
+      return {
+        countStartedBy: parsedCsb,
+        isReportSent: parsedIrs,
+        activeContadorSession: parsedSess,
+        hasCounts,
+      };
+    } catch {
+      return { countStartedBy: null, isReportSent: false, activeContadorSession: null, hasCounts: false };
+    }
+  };
+
+  // Sessão de Contador isolada por base (apenas quando há contagem iniciada)
+  const [activeContadorSession, setActiveContadorSession] = useState<ContadorSession | null>(() => {
+    return readBranchInitialStatus(activeBranch).activeContadorSession;
+  });
+
+  // Estado das duas bases para controle de concorrência global (nas duas bases)
   const [branchStatusPA, setBranchStatusPA] = useState<{
     countStartedBy: CountStartedBy | null;
     isReportSent: boolean;
     activeContadorSession: ContadorSession | null;
     hasCounts: boolean;
-  }>(() => {
-    const csb = localStorage.getItem(getBranchStorageKey('PAULO AFONSO', 'count_started_by'));
-    const irs = localStorage.getItem(getBranchStorageKey('PAULO AFONSO', 'is_report_sent'));
-    const sess = localStorage.getItem(getBranchStorageKey('PAULO AFONSO', 'active_contador_session'));
-    const mats = localStorage.getItem(getBranchStorageKey('PAULO AFONSO', 'today_materials'));
-    const eqs = localStorage.getItem(getBranchStorageKey('PAULO AFONSO', 'today_equipments'));
-    const parsedMats = mats ? JSON.parse(mats) : {};
-    const parsedEqs = eqs ? JSON.parse(eqs) : {};
-    const hasCounts = Object.keys(parsedMats).length > 0 || Object.keys(parsedEqs).length > 0;
-    return {
-      countStartedBy: csb ? JSON.parse(csb) : null,
-      isReportSent: irs ? JSON.parse(irs) : false,
-      activeContadorSession: sess ? JSON.parse(sess) : null,
-      hasCounts,
-    };
-  });
+  }>(() => readBranchInitialStatus('PAULO AFONSO'));
 
   const [branchStatusDEL, setBranchStatusDEL] = useState<{
     countStartedBy: CountStartedBy | null;
     isReportSent: boolean;
     activeContadorSession: ContadorSession | null;
     hasCounts: boolean;
-  }>(() => {
-    const csb = localStorage.getItem(getBranchStorageKey('DELMIRO', 'count_started_by'));
-    const irs = localStorage.getItem(getBranchStorageKey('DELMIRO', 'is_report_sent'));
-    const sess = localStorage.getItem(getBranchStorageKey('DELMIRO', 'active_contador_session'));
-    const mats = localStorage.getItem(getBranchStorageKey('DELMIRO', 'today_materials'));
-    const eqs = localStorage.getItem(getBranchStorageKey('DELMIRO', 'today_equipments'));
-    const parsedMats = mats ? JSON.parse(mats) : {};
-    const parsedEqs = eqs ? JSON.parse(eqs) : {};
-    const hasCounts = Object.keys(parsedMats).length > 0 || Object.keys(parsedEqs).length > 0;
-    return {
-      countStartedBy: csb ? JSON.parse(csb) : null,
-      isReportSent: irs ? JSON.parse(irs) : false,
-      activeContadorSession: sess ? JSON.parse(sess) : null,
-      hasCounts,
-    };
-  });
+  }>(() => readBranchInitialStatus('DELMIRO'));
 
   const [emailSettings, setEmailSettings] = useState<EmailSettings>(() => {
     return loadInitialBranchData(
@@ -593,6 +610,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const cStarted = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(newBranch, 'count_started_by', null, []);
     const repSent = isNewDay ? false : loadInitialBranchData<boolean>(newBranch, 'is_report_sent', false, []);
+    const hasBranchCounts = !isNewDay && (
+      Object.values((mCounts || {}) as Record<string, MaterialDailyEntry>).some(hasMaterialEntryQuantity) ||
+      Object.keys(eqCounts || {}).length > 0 ||
+      (Array.isArray(uncat) && uncat.length > 0)
+    );
+    const validSess = !isNewDay && !repSent && (Boolean(cStarted) || hasBranchCounts) ? sess : null;
 
     setMaterials(mats);
     setFreezers(frzs);
@@ -604,7 +627,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setLastCountBackup(bkp);
     setLogs(lg);
     setFrozenReportTextState(frzRep);
-    setActiveContadorSession(isNewDay ? null : sess);
+    setActiveContadorSession(validSess);
     setCountStartedBy(cStarted);
     setIsReportSent(repSent);
     setEmailSettings(branchEmailSettings);
@@ -665,7 +688,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const parsedUncat = savedUncat ? JSON.parse(savedUncat) : [];
 
           const hasContent =
-            Object.keys(parsedMat).length > 0 ||
+            Object.values(parsedMat as Record<string, MaterialDailyEntry>).some(hasMaterialEntryQuantity) ||
             Object.keys(parsedEq).length > 0 ||
             parsedUncat.length > 0;
 
@@ -890,7 +913,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const effCountStartedBy = isPreviousDay ? null : (remote.countStartedBy || null);
     const effIsReportSent = isPreviousDay ? false : !!remote.isReportSent;
-    const effSession = isPreviousDay ? null : (remote.activeContadorSession || null);
     const effMatCounts = isPreviousDay ? {} : (remote.materialCounts || {});
     const effEqCounts = isPreviousDay ? {} : (remote.equipmentCounts || {});
     const effUncat = isPreviousDay ? [] : (Array.isArray(remote.uncataloguedEquipments) ? remote.uncataloguedEquipments : []);
@@ -902,7 +924,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     let effBackup = remote.lastCountBackup !== undefined ? remote.lastCountBackup : undefined;
     if (isPreviousDay) {
       const hadPrevCounts =
-        (remote.materialCounts && Object.keys(remote.materialCounts).length > 0) ||
+        (remote.materialCounts && Object.values(remote.materialCounts).some(hasMaterialEntryQuantity)) ||
         (remote.equipmentCounts && Object.keys(remote.equipmentCounts).length > 0) ||
         (Array.isArray(remote.uncataloguedEquipments) && remote.uncataloguedEquipments.length > 0);
       if (hadPrevCounts) {
@@ -917,9 +939,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     const hasCounts =
-      Object.keys(effMatCounts).length > 0 ||
+      Object.values(effMatCounts).some(hasMaterialEntryQuantity) ||
       Object.keys(effEqCounts).length > 0 ||
       effUncat.length > 0;
+
+    // A sessão só permanece ativa se houver contagem efetivamente iniciada e relatório ainda não enviado
+    const effSession = (isPreviousDay || effIsReportSent || (!effCountStartedBy && !hasCounts))
+      ? null
+      : (remote.activeContadorSession || null);
 
     const statusObj = {
       countStartedBy: effCountStartedBy,
@@ -1063,17 +1090,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Verificação de itens contados hoje na base atual
   const hasCurrentBranchCounts = useMemo(() => {
-    const hasMats = Object.values(materialCounts).some(m =>
-      (m.disponivel || 0) > 0 ||
-      (m.danificado || 0) > 0 ||
-      (m.barrilCheio || 0) > 0 ||
-      (m.barrilVazio || 0) > 0 ||
-      (m.barrilEmRota || 0) > 0 ||
-      (m.co2Cheio || 0) > 0 ||
-      (m.co2Mexido || 0) > 0 ||
-      (m.co2Vazio || 0) > 0 ||
-      (m.co2EmRota || 0) > 0
-    );
+    const hasMats = Object.values(materialCounts).some(hasMaterialEntryQuantity);
     const hasEqs = Object.keys(equipmentCounts).length > 0;
     const hasUncat = uncataloguedEquipments.length > 0;
     return hasMats || hasEqs || hasUncat;
@@ -1165,24 +1182,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (storedUncat) {
         try { setUncataloguedEquipments(JSON.parse(storedUncat)); } catch {}
       }
-      const storedSession = localStorage.getItem(getBranchStorageKey(curBranch, 'active_contador_session'));
-      if (storedSession) {
-        try { setActiveContadorSession(JSON.parse(storedSession)); } catch {}
-      } else {
-        setActiveContadorSession(null);
-      }
-      const storedCountStartedBy = localStorage.getItem(getBranchStorageKey(curBranch, 'count_started_by'));
-      if (storedCountStartedBy) {
-        try { setCountStartedBy(JSON.parse(storedCountStartedBy)); } catch {}
-      } else {
-        setCountStartedBy(null);
-      }
-      const storedReportSent = localStorage.getItem(getBranchStorageKey(curBranch, 'is_report_sent'));
-      if (storedReportSent) {
-        try { setIsReportSent(JSON.parse(storedReportSent)); } catch {}
-      } else {
-        setIsReportSent(false);
-      }
+      const statusCur = readBranchInitialStatus(curBranch);
+      setActiveContadorSession(statusCur.activeContadorSession);
+      setCountStartedBy(statusCur.countStartedBy);
+      setIsReportSent(statusCur.isReportSent);
+      setBranchStatusPA(readBranchInitialStatus('PAULO AFONSO'));
+      setBranchStatusDEL(readBranchInitialStatus('DELMIRO'));
       const storedMaterials = localStorage.getItem(getBranchStorageKey(curBranch, 'materials'));
       if (storedMaterials) {
         try { setMaterials(JSON.parse(storedMaterials)); } catch {}
@@ -1259,30 +1264,123 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   }, []);
 
-  // Inicia a marcação de contagem iniciada pelo contador ativo (apenas local até o envio do e-mail)
+  // Inicia a marcação de contagem iniciada apenas ao inserir a primeira quantidade em um item pelo contador (local até o envio do e-mail)
   const ensureCountStarted = () => {
-    if (activeUser && activeUser.roleLevel === 'contador' && !countStartedBy) {
-      const newStarted: CountStartedBy = {
+    if (!activeUser || activeUser.roleLevel !== 'contador') return;
+
+    let startedVal = countStartedBy;
+    let sessionVal = activeContadorSession;
+    let changed = false;
+
+    if (!startedVal) {
+      startedVal = {
         userId: activeUser.id,
         userName: activeUser.name,
         registration: activeUser.registration,
         startedAt: Date.now(),
       };
-      setCountStartedBy(newStarted);
-      localStorage.setItem(getBranchStorageKey(activeBranch, 'count_started_by'), JSON.stringify(newStarted));
-      if (activeBranch === 'PAULO AFONSO') {
-        setBranchStatusPA(prev => ({ ...prev, countStartedBy: newStarted, hasCounts: true }));
-      } else {
-        setBranchStatusDEL(prev => ({ ...prev, countStartedBy: newStarted, hasCounts: true }));
-      }
+      setCountStartedBy(startedVal);
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'count_started_by'), JSON.stringify(startedVal));
+      changed = true;
+    }
+
+    if (!sessionVal || sessionVal.userId !== activeUser.id) {
+      sessionVal = {
+        userId: activeUser.id,
+        userName: activeUser.name,
+        registration: activeUser.registration,
+        loginTime: sessionVal?.loginTime || Date.now(),
+        lastHeartbeat: Date.now(),
+      };
+      setActiveContadorSession(sessionVal);
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'active_contador_session'), JSON.stringify(sessionVal));
+      changed = true;
+    }
+
+    const updateBranchStatus = (prev: {
+      countStartedBy: CountStartedBy | null;
+      isReportSent: boolean;
+      activeContadorSession: ContadorSession | null;
+      hasCounts: boolean;
+    }) => ({
+      ...prev,
+      countStartedBy: startedVal,
+      activeContadorSession: sessionVal,
+      hasCounts: true,
+    });
+
+    if (activeBranch === 'PAULO AFONSO') {
+      setBranchStatusPA(updateBranchStatus);
+    } else {
+      setBranchStatusDEL(updateBranchStatus);
+    }
+
+    if (changed) {
       broadcastSync('COUNT_STARTED');
+    }
+  };
+
+  // Se todas as quantidades/itens forem zerados ou removidos antes do envio do e-mail, desfaz o bloqueio de contagem iniciada
+  const clearCountStartedIfEmpty = () => {
+    if (isReportSent) return;
+    const hadLock = Boolean(countStartedBy) || Boolean(activeContadorSession);
+    if (countStartedBy) {
+      setCountStartedBy(null);
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'count_started_by'));
+    }
+    if (activeContadorSession) {
+      setActiveContadorSession(null);
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'active_contador_session'));
+    }
+    const emptyStatus = {
+      countStartedBy: null,
+      isReportSent: false,
+      activeContadorSession: null,
+      hasCounts: false,
+    };
+    if (activeBranch === 'PAULO AFONSO') {
+      setBranchStatusPA(emptyStatus);
+    } else {
+      setBranchStatusDEL(emptyStatus);
+    }
+    if (hadLock) {
+      broadcastSync('COUNT_CLEARED');
     }
   };
 
   // --- ATUALIZAÇÕES DA CONTAGEM DIÁRIA (SALVAMENTO AUTOMÁTICO) ---
   const updateMaterialCount = (itemId: string, data: Partial<MaterialDailyEntry>) => {
     if (!canActiveUserCount) return;
-    ensureCountStarted();
+
+    const currentEntry = materialCounts[itemId] || {
+      itemId,
+      disponivel: 0,
+      danificado: 0,
+      barrilCheio: 0,
+      barrilVazio: 0,
+      barrilEmRota: 0,
+      co2Cheio: 0,
+      co2Mexido: 0,
+      co2Vazio: 0,
+      co2EmRota: 0,
+    };
+    const updatedMap = {
+      ...materialCounts,
+      [itemId]: {
+        ...currentEntry,
+        ...data,
+      },
+    };
+    const willHaveAnyCount =
+      Object.values(updatedMap).some(hasMaterialEntryQuantity) ||
+      Object.keys(equipmentCounts).length > 0 ||
+      uncataloguedEquipments.length > 0;
+
+    if (willHaveAnyCount) {
+      ensureCountStarted();
+    } else {
+      clearCountStartedIfEmpty();
+    }
 
     // EXIGÊNCIA: O campo "PRÉVIA DO RELATÓRIO" só será atualizado automaticamente caso seja modificado na contagem da tela Materiais
     if (frozenReportText) {
@@ -1352,6 +1450,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.removeItem(getBranchStorageKey(activeBranch, 'frozen_report'));
     }
 
+    const nextEq = { ...equipmentCounts };
+    delete nextEq[itemId];
+    const willHaveAnyCount =
+      Object.values(materialCounts).some(hasMaterialEntryQuantity) ||
+      Object.keys(nextEq).length > 0 ||
+      uncataloguedEquipments.length > 0;
+    if (!willHaveAnyCount) {
+      clearCountStartedIfEmpty();
+    }
+
     setEquipmentCounts(prev => {
       const copy = { ...prev };
       delete copy[itemId];
@@ -1404,6 +1512,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (frozenReportText) {
       setFrozenReportText(null);
       localStorage.removeItem(getBranchStorageKey(activeBranch, 'frozen_report'));
+    }
+
+    const nextUncat = uncataloguedEquipments.filter(item => item.id !== id);
+    const willHaveAnyCount =
+      Object.values(materialCounts).some(hasMaterialEntryQuantity) ||
+      Object.keys(equipmentCounts).length > 0 ||
+      nextUncat.length > 0;
+    if (!willHaveAnyCount) {
+      clearCountStartedIfEmpty();
     }
 
     setUncataloguedEquipments(prev => {
@@ -2077,7 +2194,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           remoteReportSent = !!remote.isReportSent;
           remoteSession = remote.activeContadorSession || null;
           remoteHasCounts = Boolean(
-            (remote.materialCounts && Object.keys(remote.materialCounts).length > 0) ||
+            (remote.materialCounts && Object.values(remote.materialCounts).some(hasMaterialEntryQuantity)) ||
             (remote.equipmentCounts && Object.keys(remote.equipmentCounts).length > 0) ||
             (Array.isArray(remote.uncataloguedEquipments) && remote.uncataloguedEquipments.length > 0)
           );
@@ -2104,7 +2221,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const sEq = localStorage.getItem(getBranchStorageKey(b, 'today_equipments'));
           const sUnc = localStorage.getItem(getBranchStorageKey(b, 'today_uncatalogued'));
           if (
-            (sMat && Object.keys(JSON.parse(sMat)).length > 0) ||
+            (sMat && Object.values(JSON.parse(sMat) as Record<string, MaterialDailyEntry>).some(hasMaterialEntryQuantity)) ||
             (sEq && Object.keys(JSON.parse(sEq)).length > 0) ||
             (sUnc && JSON.parse(sUnc).length > 0)
           ) {
@@ -2120,16 +2237,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         ? (remoteStarted || (!remoteReportSent && localHasUnsentCounts ? localStarted : null))
         : localStarted;
       const isReportSentVal = remote !== null ? remoteReportSent : localReportSent;
-      const activeSessionVal = remote !== null
-        ? (remoteSession || (!remoteReportSent && localHasUnsentCounts ? localSession : null))
-        : localSession;
       const hasCountsVal = remote !== null
         ? (remoteHasCounts || (!remoteReportSent && localHasUnsentCounts))
         : localHasCounts;
+      const activeSessionVal = (isReportSentVal || (!countStartedByVal && !hasCountsVal))
+        ? null
+        : (remote !== null
+            ? (remoteSession || (!remoteReportSent && localHasUnsentCounts ? localSession : null))
+            : localSession);
 
-      // Existe contagem em andamento se foi iniciada por um contador ou possui contagens/sessão ativa e o relatório por e-mail AINDA NÃO foi enviado
+      // A contagem só é considerada iniciada quando o contador inserir a primeira quantidade em algum item (countStartedBy ou contagens registradas)
       const isCountInProgressVal =
-        (Boolean(countStartedByVal) || hasCountsVal || Boolean(activeSessionVal)) && !isReportSentVal;
+        (Boolean(countStartedByVal) || hasCountsVal) && !isReportSentVal;
 
       return {
         countStartedBy: countStartedByVal,
@@ -2144,9 +2263,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const statusPA = evaluateBranchStatus('PAULO AFONSO', remotePA);
     const statusDEL = evaluateBranchStatus('DELMIRO', remoteDEL);
 
-    // EXIGÊNCIA: Permitir apenas 1 usuário contador logado por vez no app, em cada base, informando aos demais que tentar logar: "Existe contagem em andamento.".
-    // Os usuários Master também não poderão logar no app, aparecendo a mensagem: "Existe contagem em andamento.", isso para as duas bases.
-    // Somente após o envio do estoque por e-mail pelo usuário contador que estiver realizando a contagem no momento é que o acesso total das funcionalidades do app serão liberados para os usuários Master.
+    // EXIGÊNCIA: Permitir apenas 1 usuário contador após contagem iniciada (primeira quantidade inserida), informando aos demais que tentar logar: "Existe contagem em andamento.".
+    // Enquanto nada foi inserido, o app não bloqueia os demais por contagem iniciada.
     if (user.roleLevel === 'master') {
       if (statusPA.isCountInProgress || statusDEL.isCountInProgress) {
         return {
@@ -2169,7 +2287,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }
 
-      // EXIGÊNCIA: Somente o contador que iniciou a contagem, poderá logar no app e dar continuidade a contagem iniciada no dia, isso para as duas bases.
+      // EXIGÊNCIA: Somente o contador que iniciou a contagem (inseriu a primeira quantidade) poderá logar no app e dar continuidade à contagem iniciada no dia.
       if (targetStatus.countStartedBy) {
         const isInitiator = targetStatus.countStartedBy.userId === user.id ||
           (targetStatus.countStartedBy.registration && targetStatus.countStartedBy.registration.toUpperCase() === cleanReg);
@@ -2181,9 +2299,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       }
 
-      // EXIGÊNCIA: Permitir apenas 1 usuário contador logado por vez no app, em cada base,
-      // informando aos demais que tentar logar: "Existe contagem em andamento."
-      if (targetStatus.activeSession && targetStatus.activeSession.userId && targetStatus.activeSession.userId !== user.id) {
+      // Bloqueia outro contador apenas se houver contagem efetivamente em andamento (com itens/quantidades inseridos)
+      if (targetStatus.isCountInProgress && targetStatus.activeSession && targetStatus.activeSession.userId && targetStatus.activeSession.userId !== user.id) {
         const isRecent = !targetStatus.activeSession.lastHeartbeat || (Date.now() - targetStatus.activeSession.lastHeartbeat < 12 * 60 * 60 * 1000);
         if (isRecent) {
           return {
@@ -2233,25 +2350,33 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRecipientsTextState(branchRecipients);
 
     if (user.roleLevel === 'contador') {
-      const newSession: ContadorSession = {
-        userId: user.id,
-        userName: user.name,
-        registration: user.registration,
-        loginTime: Date.now(),
-        lastHeartbeat: Date.now(),
-      };
-      setActiveContadorSession(newSession);
-      localStorage.setItem(getBranchStorageKey(targetBranch, 'active_contador_session'), JSON.stringify(newSession));
-      if (targetBranch === 'PAULO AFONSO') {
-        setBranchStatusPA(prev => ({ ...prev, activeContadorSession: newSession }));
+      const targetStatus = targetBranch === 'PAULO AFONSO' ? statusPA : statusDEL;
+      if (targetStatus.isCountInProgress) {
+        // Contador retomando contagem já iniciada (já possui item inserido)
+        const resumedSession: ContadorSession = {
+          userId: user.id,
+          userName: user.name,
+          registration: user.registration,
+          loginTime: targetStatus.activeSession?.loginTime || Date.now(),
+          lastHeartbeat: Date.now(),
+        };
+        setActiveContadorSession(resumedSession);
+        localStorage.setItem(getBranchStorageKey(targetBranch, 'active_contador_session'), JSON.stringify(resumedSession));
+        if (targetBranch === 'PAULO AFONSO') {
+          setBranchStatusPA(prev => ({ ...prev, activeContadorSession: resumedSession }));
+        } else {
+          setBranchStatusDEL(prev => ({ ...prev, activeContadorSession: resumedSession }));
+        }
       } else {
-        setBranchStatusDEL(prev => ({ ...prev, activeContadorSession: newSession }));
+        // Enquanto nada foi inserido, não ativa sessão bloqueadora nem envia ao Firebase
+        setActiveContadorSession(null);
+        localStorage.removeItem(getBranchStorageKey(targetBranch, 'active_contador_session'));
+        if (targetBranch === 'PAULO AFONSO') {
+          setBranchStatusPA(prev => ({ ...prev, activeContadorSession: null, countStartedBy: null, hasCounts: false }));
+        } else {
+          setBranchStatusDEL(prev => ({ ...prev, activeContadorSession: null, countStartedBy: null, hasCounts: false }));
+        }
       }
-      // Registra a sessão no Firestore no momento do login (após o login, não há mais comunicação automática até enviar o e-mail)
-      pushBranchToFirestore(targetBranch, {
-        activeContadorSession: newSession,
-        countDate: todayStr,
-      }).catch(err => console.warn('Erro ao registrar sessão do contador no login:', err));
       broadcastSync('SESSION_UPDATE');
     }
 

@@ -1096,16 +1096,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return hasMats || hasEqs || hasUncat;
   }, [materialCounts, equipmentCounts, uncataloguedEquipments]);
 
-  // Contagem em andamento na base PAULO AFONSO
+  // Contagem em andamento na base PAULO AFONSO (somente quando há ao menos 1 quantidade/item inserido pelo contador)
   const isCountInProgressPA = useMemo(() => {
     if (branchStatusPA.isReportSent) return false;
-    return !!branchStatusPA.countStartedBy || (branchStatusPA.hasCounts && !!branchStatusPA.activeContadorSession);
+    return branchStatusPA.hasCounts && (!!branchStatusPA.countStartedBy || !!branchStatusPA.activeContadorSession);
   }, [branchStatusPA]);
 
-  // Contagem em andamento na base DELMIRO
+  // Contagem em andamento na base DELMIRO (somente quando há ao menos 1 quantidade/item inserido pelo contador)
   const isCountInProgressDEL = useMemo(() => {
     if (branchStatusDEL.isReportSent) return false;
-    return !!branchStatusDEL.countStartedBy || (branchStatusDEL.hasCounts && !!branchStatusDEL.activeContadorSession);
+    return branchStatusDEL.hasCounts && (!!branchStatusDEL.countStartedBy || !!branchStatusDEL.activeContadorSession);
   }, [branchStatusDEL]);
 
   // Contagem em andamento na base ativa
@@ -1591,16 +1591,32 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return prev;
     });
 
-    // 4. Remove de equipmentCounts
+    // 4. Remove de equipmentCounts e verifica se ainda restam contagens
+    const nextEqCounts = { ...equipmentCounts };
+    if (itemId) delete nextEqCounts[itemId];
+    removedFreezerIds.forEach(id => delete nextEqCounts[id]);
+    removedEquipIds.forEach(id => delete nextEqCounts[id]);
+
+    const nextUncat = uncataloguedEquipments.filter(item =>
+      !matchesPat(item.patrimony) && (!itemId || item.id !== itemId)
+    );
+    const willHaveAnyCount =
+      Object.values(materialCounts).some(hasMaterialEntryQuantity) ||
+      Object.keys(nextEqCounts).length > 0 ||
+      nextUncat.length > 0;
+
     setEquipmentCounts(prev => {
       const updated = { ...prev };
       if (itemId) delete updated[itemId];
       removedFreezerIds.forEach(id => delete updated[id]);
       removedEquipIds.forEach(id => delete updated[id]);
-      // Remove também por patrimônio se algum count estiver indexado
       localStorage.setItem(getBranchStorageKey(activeBranch, 'today_equipments'), JSON.stringify(updated));
       return updated;
     });
+
+    if (!willHaveAnyCount) {
+      clearCountStartedIfEmpty();
+    }
 
     if (isMaster) markMasterChangesPending();
     broadcastSync('BASE_UPDATED');
@@ -2227,28 +2243,30 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ) {
             localHasCounts = true;
           }
-          if (!localReportSent && (Boolean(localStarted) || localHasCounts)) {
+          if (!localReportSent && localHasCounts) {
             localHasUnsentCounts = true;
           }
         }
       } catch {}
 
-      const countStartedByVal = remote !== null
+      const rawCountStartedBy = remote !== null
         ? (remoteStarted || (!remoteReportSent && localHasUnsentCounts ? localStarted : null))
         : localStarted;
       const isReportSentVal = remote !== null ? remoteReportSent : localReportSent;
       const hasCountsVal = remote !== null
         ? (remoteHasCounts || (!remoteReportSent && localHasUnsentCounts))
         : localHasCounts;
-      const activeSessionVal = (isReportSentVal || (!countStartedByVal && !hasCountsVal))
+
+      // A contagem só é considerada iniciada quando houver pelo menos 1 quantidade/item inserido
+      const countStartedByVal = hasCountsVal ? rawCountStartedBy : null;
+      const activeSessionVal = (isReportSentVal || !hasCountsVal || !countStartedByVal)
         ? null
         : (remote !== null
             ? (remoteSession || (!remoteReportSent && localHasUnsentCounts ? localSession : null))
             : localSession);
 
-      // A contagem só é considerada iniciada quando o contador inserir a primeira quantidade em algum item (countStartedBy ou contagens registradas)
       const isCountInProgressVal =
-        (Boolean(countStartedByVal) || hasCountsVal) && !isReportSentVal;
+        hasCountsVal && (Boolean(countStartedByVal) || Boolean(activeSessionVal)) && !isReportSentVal;
 
       return {
         countStartedBy: countStartedByVal,

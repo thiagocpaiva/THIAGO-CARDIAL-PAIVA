@@ -16,7 +16,8 @@ import {
   AlertCircle,
   Search,
   Plus,
-  Wrench
+  Wrench,
+  MessageSquareText
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { FreezerItem, EquipmentItem, UncataloguedEquipment } from '../../types/inventory';
@@ -24,6 +25,7 @@ import { ModalClonarUltima } from '../modals/ModalClonarUltima';
 import { CadastrarFreezerModal } from '../modals/CadastrarFreezerModal';
 import { CadastrarEquipamentoModal } from '../modals/CadastrarEquipamentoModal';
 import { DefeitosModal } from '../modals/DefeitosModal';
+import { ObservacoesModal } from '../modals/ObservacoesModal';
 import { AppBrandIcon } from '../AppBrandIcons';
 import { EquipmentTypeFigure } from '../EquipmentTypeIcons';
 
@@ -87,8 +89,9 @@ export const EquipamentosView: React.FC = () => {
   const [isCadastrarFreezerOpen, setIsCadastrarFreezerOpen] = useState(false);
   const [isCadastrarChopeiraOpen, setIsCadastrarChopeiraOpen] = useState(false);
 
-  // Modal para Gerenciar / Editar defeitos dos equipamentos
+  // Modal para Gerenciar / Editar defeitos e observações (OBS) dos equipamentos
   const [isDefeitosModalOpen, setIsDefeitosModalOpen] = useState(false);
+  const [isObservacoesModalOpen, setIsObservacoesModalOpen] = useState(false);
   const [isNoEquipmentsModalOpen, setIsNoEquipmentsModalOpen] = useState(false);
 
   // Modal para registrar equipamento encontrado fora da base quando não localizado
@@ -360,6 +363,7 @@ export const EquipamentosView: React.FC = () => {
     specs: string;
     status: 'disponivel' | 'danificado';
     damageDescription?: string;
+    observations?: string;
   };
 
   // Unifica todos os itens cadastrados que possuem registro de contagem
@@ -368,15 +372,17 @@ export const EquipamentosView: React.FC = () => {
   freezers.forEach(f => {
     const entry = equipmentCounts[f.id];
     if (entry) {
+      const idtStr = f.identity ? ` • ${f.identity}` : '';
       countedList.push({
         id: f.id,
         code: f.code,
         patrimony: f.patrimony,
         name: f.name,
         kind: 'freezer',
-        specs: `${f.brand} • ${f.model} • ${f.voltage}`,
+        specs: `${f.brand} • ${f.model}${idtStr} • ${f.voltage}`,
         status: entry.status === 'danificado' || f.defect ? 'danificado' : 'disponivel',
         damageDescription: entry.damageDescription || f.defect,
+        observations: f.observations?.trim() || undefined,
       });
     }
   });
@@ -393,6 +399,7 @@ export const EquipamentosView: React.FC = () => {
         specs: `${eq.type === 'chopeira_1_torneira' ? '1 Torneira' : '2 Torneiras'} • ${eq.brand} • ${eq.voltage}`,
         status: entry.status === 'danificado' || eq.defect ? 'danificado' : 'disponivel',
         damageDescription: entry.damageDescription || eq.defect,
+        observations: eq.observations?.trim() || undefined,
       });
     }
   });
@@ -528,6 +535,16 @@ export const EquipamentosView: React.FC = () => {
       return;
     }
     setIsDefeitosModalOpen(true);
+  };
+
+  const handleOpenObservacoesModal = () => {
+    const isBaseEmptyCheck = freezers.length === 0 && equipments.length === 0;
+
+    if (isBaseEmptyCheck) {
+      setIsNoEquipmentsModalOpen(true);
+      return;
+    }
+    setIsObservacoesModalOpen(true);
   };
 
   return (
@@ -773,15 +790,27 @@ export const EquipamentosView: React.FC = () => {
           </div>
 
           {/* EXIGÊNCIA 16: Ao clicar no botão "Editar defeitos dos equipamento", caso o cadastro da base esteja vazia, ou sem defeito cadastrado, nada fazer, informando por mensagem na tela que "Não existe(m) defeito(s) no cadastro para ser editado." */}
-          <button
-            type="button"
-            onClick={handleOpenDefeitosModal}
-            className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs active:scale-95 transition-all cursor-pointer"
-            title="Editar defeitos dos equipamentos cadastrados"
-          >
-            <Wrench className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>Editar defeitos dos equipamentos</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={handleOpenDefeitosModal}
+              className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs active:scale-95 transition-all cursor-pointer"
+              title="Editar defeitos dos equipamentos cadastrados"
+            >
+              <Wrench className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>Editar defeitos dos equipamentos</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenObservacoesModal}
+              className="px-3.5 py-2 bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-300 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs active:scale-95 transition-all cursor-pointer"
+              title="Editar observações (OBS) dos equipamentos cadastrados"
+            >
+              <MessageSquareText className="w-4 h-4 text-sky-600 shrink-0" />
+              <span>Editar observações dos equipamentos</span>
+            </button>
+          </div>
         </div>
 
         {/* Formulário de inserção rápida por patrimônio (apenas números) */}
@@ -852,6 +881,12 @@ export const EquipamentosView: React.FC = () => {
                         <span>Modelo: <strong>{(preview.item as any).model}</strong></span>
                       </>
                     )}
+                    {preview.kind === 'freezer' && (preview.item as FreezerItem).identity && (
+                      <>
+                        <span>•</span>
+                        <span>IDT: <strong>{(preview.item as FreezerItem).identity}</strong></span>
+                      </>
+                    )}
                     {isAlreadyCounted && (
                       <>
                         <span>•</span>
@@ -873,6 +908,16 @@ export const EquipamentosView: React.FC = () => {
                     <div className="text-emerald-700 text-[11px] font-bold flex items-center gap-1.5 pt-0.5">
                       <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[3]" />
                       <span>Equipamento sem defeito cadastrado</span>
+                    </div>
+                  )}
+
+                  {preview.item.observations && (
+                    <div className="p-2 rounded-xl bg-sky-100/70 border border-sky-200 text-sky-950 text-xs font-medium flex items-start gap-2">
+                      <MessageSquareText className="w-3.5 h-3.5 text-sky-600 shrink-0 mt-0.5" />
+                      <span>
+                        <strong className="font-bold text-sky-900">OBS:</strong>{' '}
+                        <span className="font-semibold">{preview.item.observations}</span>
+                      </span>
                     </div>
                   )}
                 </div>
@@ -970,6 +1015,15 @@ export const EquipamentosView: React.FC = () => {
                         <span className="font-semibold">{eq.damageDescription}</span>
                       </div>
                     )}
+
+                    {/* Observação (OBS) cadastrada na base */}
+                    {eq.observations && (
+                      <div className="pl-3 py-1 px-2.5 rounded-lg bg-sky-100/70 border border-sky-200 text-sky-950 text-[11px] font-medium flex items-center gap-1.5">
+                        <MessageSquareText className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                        <span className="font-bold text-sky-900">OBS:</span>
+                        <span className="font-semibold">{eq.observations}</span>
+                      </div>
+                    )}
                   </div>
                 ))}
                 <div className="text-right text-[11px] font-mono font-bold text-emerald-800 pr-2 pt-0.5">
@@ -1034,6 +1088,15 @@ export const EquipamentosView: React.FC = () => {
                         <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                         <span className="font-bold text-rose-900">Defeito:</span>
                         <span className="font-semibold">{eq.damageDescription}</span>
+                      </div>
+                    )}
+
+                    {/* Observação (OBS) cadastrada na base */}
+                    {eq.observations && (
+                      <div className="pl-3 py-1 px-2.5 rounded-lg bg-sky-100/70 border border-sky-200 text-sky-950 text-[11px] font-medium flex items-center gap-1.5">
+                        <MessageSquareText className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                        <span className="font-bold text-sky-900">OBS:</span>
+                        <span className="font-semibold">{eq.observations}</span>
                       </div>
                     )}
                   </div>
@@ -1446,6 +1509,12 @@ export const EquipamentosView: React.FC = () => {
       <DefeitosModal
         isOpen={isDefeitosModalOpen}
         onClose={() => setIsDefeitosModalOpen(false)}
+      />
+
+      {/* Modal para Editar / Gerenciar Observações (OBS) dos Equipamentos */}
+      <ObservacoesModal
+        isOpen={isObservacoesModalOpen}
+        onClose={() => setIsObservacoesModalOpen(false)}
       />
 
       {/* Modal Clonar Última (Apenas Master) */}

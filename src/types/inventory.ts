@@ -34,6 +34,7 @@ export interface FreezerItem {
   model: '4 CAIXAS' | '8 CAIXAS' | string;
   tipo?: 'PADRÃO' | 'SLIM' | string; // Informa se o modelo é SLIM
   isSlim?: boolean;
+  identity?: 'PORTA CEGA' | 'PORTA VIDRO' | 'JANELA VIDRO' | string; // Identidade do Freezer (IDT)
   voltage: '110V' | '220V' | 'Bivolt';
   defect?: string; // Defeito do equipamento caso o tenha, salvo na base
   observations?: string; // Observações do cadastro

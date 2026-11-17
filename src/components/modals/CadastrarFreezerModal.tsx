@@ -17,6 +17,7 @@ interface CadastrarFreezerModalProps {
 const MARCAS_FREEZER = ['NOVA SCHIN', 'AMSTEL', 'HEINEKEN', 'DEVASSA', 'VIVA'] as const;
 const MODELOS_FREEZER = ['4 CAIXAS', '8 CAIXAS'] as const;
 const VOLTAGENS = ['110V', '220V', 'Bivolt'] as const;
+const IDENTIDADES_FREEZER = ['PORTA CEGA', 'PORTA VIDRO', 'JANELA VIDRO'] as const;
 
 export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
   isOpen,
@@ -34,6 +35,7 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
   const [brand, setBrand] = useState<typeof MARCAS_FREEZER[number]>('NOVA SCHIN');
   const [model, setModel] = useState<typeof MODELOS_FREEZER[number]>('4 CAIXAS');
   const [isSlim, setIsSlim] = useState(false);
+  const [identity, setIdentity] = useState<string>('');
   const [voltage, setVoltage] = useState<'110V' | '220V' | 'Bivolt'>('220V');
   const [identification, setIdentification] = useState('');
   const [defect, setDefect] = useState('');
@@ -47,6 +49,7 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
       setBrand((freezerToEdit.brand as any) || 'NOVA SCHIN');
       setModel((freezerToEdit.model as any) || '4 CAIXAS');
       setIsSlim(freezerToEdit.isSlim || freezerToEdit.tipo?.toUpperCase() === 'SLIM' || freezerToEdit.name?.toUpperCase().includes('SLIM') || false);
+      setIdentity(freezerToEdit.identity || '');
       setVoltage(freezerToEdit.voltage);
       setIdentification(freezerToEdit.name || '');
       setDefect(freezerToEdit.defect || '');
@@ -58,6 +61,7 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
       setBrand('NOVA SCHIN');
       setModel('4 CAIXAS');
       setIsSlim(false);
+      setIdentity('');
       setVoltage('220V');
       setIdentification('');
       setDefect('');
@@ -71,7 +75,8 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
   // Função para acrescentar/substituir as informações selecionadas acima
   const handleAppendSelectedInfo = () => {
     const slimSuffix = isSlim ? ' SLIM' : '';
-    const infoToAdd = `Freezer ${brand} ${model}${slimSuffix} ${voltage}`;
+    const identitySuffix = identity ? ` ${identity}` : '';
+    const infoToAdd = `Freezer ${brand} ${model}${slimSuffix}${identitySuffix} ${voltage}`;
     setIdentification(infoToAdd);
   };
 
@@ -107,9 +112,11 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
     }
 
     const slimSuffix = isSlim ? ' SLIM' : '';
-    const finalName = identification.trim() || `Freezer ${brand} ${model}${slimSuffix} ${voltage}`;
+    const identitySuffix = identity ? ` ${identity}` : '';
+    const finalName = identification.trim() || `Freezer ${brand} ${model}${slimSuffix}${identitySuffix} ${voltage}`;
     const cleanDefect = defect.trim() || undefined;
     const cleanObs = observations.trim() || undefined;
+    const cleanIdentity = identity.trim() || undefined;
 
     if (freezerToEdit) {
       updateFreezer({
@@ -121,6 +128,7 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
         model,
         tipo: isSlim ? 'SLIM' : 'PADRÃO',
         isSlim,
+        identity: cleanIdentity,
         voltage,
         defect: cleanDefect,
         observations: cleanObs,
@@ -134,6 +142,7 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
         model,
         tipo: isSlim ? 'SLIM' : 'PADRÃO',
         isSlim,
+        identity: cleanIdentity,
         voltage,
         defect: cleanDefect,
         observations: cleanObs,
@@ -348,6 +357,29 @@ export const CadastrarFreezerModal: React.FC<CadastrarFreezerModalProps> = ({
                   }`}
                 >
                   {v}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Identidade (IDT) */}
+          <div>
+            <label className="text-xs font-bold text-slate-700 block mb-1.5">
+              Identidade
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {IDENTIDADES_FREEZER.map(idt => (
+                <button
+                  type="button"
+                  key={idt}
+                  onClick={() => setIdentity(prev => prev === idt ? '' : idt)}
+                  className={`py-2 px-2 text-center rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                    identity === idt
+                      ? 'bg-sky-500 text-white border-sky-400 shadow-xs font-black'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {idt}
                 </button>
               ))}
             </div>

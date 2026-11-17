@@ -180,12 +180,12 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
     // EXIGÊNCIA: inserir tanto arquivo a baixar, quanto no arquivo a exportar do estoque de Equipamentos, a coluna "OBS"
     const branchToUse = branchParam || targetDownloadBranch || activeBranch;
     const branchCode = branchToUse === 'PAULO AFONSO' ? 'PAULO_AFONSO' : 'DELMIRO';
-    const header = 'BASE;CODIGO;PATRIMONIO;NOME;MARCA;MODELO;TIPO;VOLTAGEM;DEFEITOS_DOS_EQUIPAMENTOS;OBS\n';
+    const header = 'BASE;CODIGO;PATRIMONIO;NOME;MARCA;MODELO;TIPO;IDT;VOLTAGEM;DEFEITOS_DOS_EQUIPAMENTOS;OBS\n';
     const sampleRows = [
-      `${branchToUse};FRZ-101;PAT-100234;Freezer Horizontal 4 Caixas SLIM;NOVA SCHIN;4 CAIXAS;SLIM;220V;Sem motor;Localizado no galpão B`,
-      `${branchToUse};FRZ-102;PAT-100235;Freezer Horizontal 8 Caixas;HEINEKEN;8 CAIXAS;PADRÃO;220V;;Revisado recentemente`,
-      `${branchToUse};CHP-201;PAT-200551;Chopeira Eletrica 1 Torneira;AMSTEL;1 TORNEIRA;CHOPEIRA;220V;Vazamento na serpentina;Aguardando peça de reposição`,
-      `${branchToUse};CHP-202;PAT-200552;Chopeira Eletrica 2 Torneiras;HEINEKEN;2 TORNEIRAS;CHOPEIRA;220V;;`,
+      `${branchToUse};FRZ-101;PAT-100234;Freezer Horizontal 4 Caixas SLIM;NOVA SCHIN;4 CAIXAS;SLIM;PORTA CEGA;220V;Sem motor;Localizado no galpão B`,
+      `${branchToUse};FRZ-102;PAT-100235;Freezer Horizontal 8 Caixas;HEINEKEN;8 CAIXAS;PADRÃO;PORTA VIDRO;220V;;Revisado recentemente`,
+      `${branchToUse};CHP-201;PAT-200551;Chopeira Eletrica 1 Torneira;AMSTEL;1 TORNEIRA;CHOPEIRA;;220V;Vazamento na serpentina;Aguardando peça de reposição`,
+      `${branchToUse};CHP-202;PAT-200552;Chopeira Eletrica 2 Torneiras;HEINEKEN;2 TORNEIRAS;CHOPEIRA;;220V;;`,
     ].join('\n');
 
     const csvContent = '\uFEFF' + header + sampleRows;
@@ -259,17 +259,18 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
         setIsNoDataExportModalOpen(true);
         return;
       }
-      const header = 'BASE;CODIGO;PATRIMONIO;NOME;MARCA;MODELO;TIPO;VOLTAGEM;DEFEITOS_DOS_EQUIPAMENTOS;OBS\n';
+      const header = 'BASE;CODIGO;PATRIMONIO;NOME;MARCA;MODELO;TIPO;IDT;VOLTAGEM;DEFEITOS_DOS_EQUIPAMENTOS;OBS\n';
       const rows: string[] = [];
       freezers.forEach(f => {
         const tipoSlim = f.isSlim || f.tipo?.toUpperCase() === 'SLIM' || f.name.toUpperCase().includes('SLIM') ? 'SLIM' : 'PADRÃO';
+        const idt = (f.identity || '').replace(/[\r\n;]+/g, ' ').trim();
         const obs = (f.observations || '').replace(/[\r\n;]+/g, ' ').trim();
-        rows.push(`${activeBranch};${f.code};${f.patrimony};${f.name};${f.brand};${f.model};${tipoSlim};${f.voltage};${f.defect || ''};${obs}`);
+        rows.push(`${activeBranch};${f.code};${f.patrimony};${f.name};${f.brand};${f.model};${tipoSlim};${idt};${f.voltage};${f.defect || ''};${obs}`);
       });
       equipments.forEach(eq => {
         const modLabel = eq.type === 'chopeira_2_torneiras' ? '2 TORNEIRAS' : '1 TORNEIRA';
         const obs = (eq.observations || '').replace(/[\r\n;]+/g, ' ').trim();
-        rows.push(`${activeBranch};${eq.code};${eq.patrimony};${eq.name};${eq.brand || 'Memo'};${modLabel};CHOPEIRA;${eq.voltage};${eq.defect || ''};${obs}`);
+        rows.push(`${activeBranch};${eq.code};${eq.patrimony};${eq.name};${eq.brand || 'Memo'};${modLabel};CHOPEIRA;;${eq.voltage};${eq.defect || ''};${obs}`);
       });
       triggerCsvDownload(`cadastro_base_equipamentos_${branchCode}_${todayStr}.csv`, '\uFEFF' + header + rows.join('\n'));
       showToast(`Base de Equipamentos (${activeBranch}) exportada com sucesso (${freezers.length + equipments.length} itens)!`);
@@ -294,17 +295,18 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
     }
 
     if (hasEquipments) {
-      const headerEqs = 'BASE;CODIGO;PATRIMONIO;NOME;MARCA;MODELO;TIPO;VOLTAGEM;DEFEITOS_DOS_EQUIPAMENTOS;OBS\n';
+      const headerEqs = 'BASE;CODIGO;PATRIMONIO;NOME;MARCA;MODELO;TIPO;IDT;VOLTAGEM;DEFEITOS_DOS_EQUIPAMENTOS;OBS\n';
       const rowsEqs: string[] = [];
       freezers.forEach(f => {
         const tipoSlim = f.isSlim || f.tipo?.toUpperCase() === 'SLIM' || f.name.toUpperCase().includes('SLIM') ? 'SLIM' : 'PADRÃO';
+        const idt = (f.identity || '').replace(/[\r\n;]+/g, ' ').trim();
         const obs = (f.observations || '').replace(/[\r\n;]+/g, ' ').trim();
-        rowsEqs.push(`${activeBranch};${f.code};${f.patrimony};${f.name};${f.brand};${f.model};${tipoSlim};${f.voltage};${f.defect || ''};${obs}`);
+        rowsEqs.push(`${activeBranch};${f.code};${f.patrimony};${f.name};${f.brand};${f.model};${tipoSlim};${idt};${f.voltage};${f.defect || ''};${obs}`);
       });
       equipments.forEach(eq => {
         const modLabel = eq.type === 'chopeira_2_torneiras' ? '2 TORNEIRAS' : '1 TORNEIRA';
         const obs = (eq.observations || '').replace(/[\r\n;]+/g, ' ').trim();
-        rowsEqs.push(`${activeBranch};${eq.code};${eq.patrimony};${eq.name};${eq.brand || 'Memo'};${modLabel};CHOPEIRA;${eq.voltage};${eq.defect || ''};${obs}`);
+        rowsEqs.push(`${activeBranch};${eq.code};${eq.patrimony};${eq.name};${eq.brand || 'Memo'};${modLabel};CHOPEIRA;;${eq.voltage};${eq.defect || ''};${obs}`);
       });
       const eqCsv = '\uFEFF' + headerEqs + rowsEqs.join('\n');
 
@@ -433,7 +435,8 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                   if (!f.name || !f.name.trim()) {
                     errors.push({ line: lineNum, field: 'NOME', itemCode: f.code, message: 'Nome do freezer obrigatório não informado.' });
                   }
-                  newFreezers.push(f);
+                  const cleanIdt = (f.identity || f.idt || '').toString().trim().toUpperCase() || undefined;
+                  newFreezers.push({ ...f, identity: cleanIdt });
                 });
               }
             }
@@ -488,6 +491,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
             const idxCategoria = colIndex(['CATEGORIA', 'CATEGORY']);
             const idxSubOpcao = colIndex(['SUBOPCAO', 'SUBOPÇÃO', 'MARCA', 'BRAND']);
             const idxModelo = colIndex(['MODELO', 'MODEL']);
+            const idxIdt = colIndex(['IDT', 'IDENTIDADE', 'IDENTITY']);
             const idxVoltagem = colIndex(['VOLTAGEM', 'VOLTAGE', 'VOLTS']);
             const idxDefeito = colIndex(['DEFEITO', 'DEFEITOS', 'DEFEITOS_DOS_EQUIPAMENTOS', 'DAMAGE']);
             const idxObs = colIndex(['OBS', 'OBSERVACOES', 'OBSERVAÇÕES', 'OBSERVACAO', 'OBSERVAÇÃO', 'OBSERVATION', 'OBSERVATIONS']);
@@ -520,6 +524,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               const categoria = idxCategoria >= 0 ? getVal(idxCategoria) : '';
               const subOpcao = idxSubOpcao >= 0 ? getVal(idxSubOpcao) : '';
               const modelo = idxModelo >= 0 ? getVal(idxModelo) : '';
+              const idtRaw = idxIdt >= 0 ? getVal(idxIdt) : '';
               const voltagem = idxVoltagem >= 0 ? getVal(idxVoltagem) : '';
               const defeito = idxDefeito >= 0 ? getVal(idxDefeito) : '';
               const observacao = idxObs >= 0 ? getVal(idxObs) : '';
@@ -643,6 +648,8 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                   createdAt: now,
                 });
               } else if (cleanTipo === 'freezer' || cleanTipo === 'frz') {
+                const isSlimImported = tipoRaw.trim().toUpperCase() === 'SLIM' || nome.toUpperCase().includes('SLIM');
+                const cleanIdt = idtRaw && idtRaw.trim() ? idtRaw.trim().toUpperCase() : undefined;
                 newFreezers.push({
                   id: 'frz-imp-' + Date.now() + '-' + i,
                   code: (codigo || '').toUpperCase().trim(),
@@ -650,6 +657,9 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                   name: nome || `Freezer ${codigo || patrimonio}`,
                   brand: subOpcao || 'Metalfrio',
                   model: modelo || 'Padrão',
+                  tipo: isSlimImported ? 'SLIM' : 'PADRÃO',
+                  isSlim: isSlimImported,
+                  identity: cleanIdt,
                   voltage: (voltagem as any) || '220V',
                   defect: cleanDefect,
                   observations: cleanObs,
@@ -977,7 +987,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
       itemType: 'freezer' as const,
       code: f.code,
       name: f.name,
-      subDetails: `Patrimônio: ${f.patrimony} • ${f.brand} • ${f.voltage}`,
+      subDetails: `Patrimônio: ${f.patrimony} • ${f.brand} • ${f.model}${f.identity ? ` • IDT: ${f.identity}` : ''} • ${f.voltage}`,
       defect: f.defect?.trim() || undefined,
       isUnregistered: isUnregistered(f.code),
       rawItem: f
@@ -1480,7 +1490,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                     Equipamentos
                   </span>
                   <span className="text-[10px] text-sky-800 mt-0.5 block leading-tight">
-                    Campos: Base, Código, Patrimônio, Nome, Marca, Modelo, Tipo, Voltagem, Defeitos, OBS.
+                    Campos: Base, Código, Patrimônio, Nome, Marca, Modelo, Tipo, IDT, Voltagem, Defeitos, OBS.
                   </span>
                 </div>
               </button>
@@ -2354,6 +2364,11 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                       <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-bold text-rose-800 bg-rose-50 px-2.5 py-0.5 rounded-lg border border-rose-200 w-fit">
                         <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                         <span>Defeito: <span className="font-semibold text-rose-950">{item.defect}</span></span>
+                      </div>
+                    )}
+                    {item.rawItem?.observations && (
+                      <div className="flex items-center gap-1.5 mt-1 text-[11px] font-bold text-sky-900 bg-sky-50 px-2.5 py-0.5 rounded-lg border border-sky-200 w-fit">
+                        <span>OBS: <span className="font-semibold text-sky-950">{item.rawItem.observations}</span></span>
                       </div>
                     )}
                   </div>

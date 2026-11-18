@@ -1191,7 +1191,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               Existe contagem em andamento.
             </p>
             <p className="text-[11px] text-amber-900 mt-0.5">
-              O cadastro de Materiais e Equipamentos está em modo somente leitura nas duas bases até o envio do estoque por e-mail.
+              O cadastro de Materiais e Equipamentos está em modo somente leitura na base {activeBranch} até o envio do estoque por e-mail.
             </p>
           </div>
         </div>

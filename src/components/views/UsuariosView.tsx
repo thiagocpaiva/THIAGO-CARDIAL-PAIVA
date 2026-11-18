@@ -221,7 +221,7 @@ export const UsuariosView: React.FC = () => {
               Existe contagem em andamento.
             </p>
             <p className="text-[11px] text-amber-900 mt-0.5">
-              O cadastro de Usuários está em modo somente leitura nas duas bases até o envio do estoque por e-mail.
+              O cadastro de Usuários está em modo somente leitura enquanto houver contagem em andamento na base ativa até o envio do estoque por e-mail.
             </p>
           </div>
         </div>

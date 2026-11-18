@@ -27,7 +27,6 @@ import {
   INITIAL_SERVER_EMAIL_CONFIG
 } from '../data/initialData';
 import { getTodayKey, formatDateBR } from '../utils/dateUtils';
-import { generateStockReportText } from '../utils/reportGenerator';
 import {
   fetchBranchData,
   fetchUsersFromFirestore,
@@ -611,6 +610,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return;
     }
     if (newBranch === activeBranch) return;
+    if (activeUser?.roleLevel === 'master') {
+      const targetBranchStatus = newBranch === 'PAULO AFONSO' ? branchStatusPA : branchStatusDEL;
+      const targetInProgress = targetBranchStatus.recontagemUnlocked || (
+        !targetBranchStatus.isReportSent &&
+        targetBranchStatus.hasCounts &&
+        (Boolean(targetBranchStatus.countStartedBy) || Boolean(targetBranchStatus.activeContadorSession))
+      );
+      if (targetInProgress) {
+        setSystemNotice(`Existe contagem em andamento na base ${newBranch}.`);
+        return;
+      }
+    }
     isSwitchingBranchRef.current = true;
     activeBranchRef.current = newBranch;
     setActiveBranchState(newBranch);
@@ -1026,7 +1037,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const effRecSelected = isPreviousDay ? {} : (remote.recontagemSelectedIds || {});
     const effRecMat = isPreviousDay ? {} : (remote.recontagemMaterialCounts || {});
     const effRecEq = isPreviousDay ? {} : (remote.recontagemEquipmentCounts || {});
-    const effFrozen = isPreviousDay ? null : (remote.frozenReportText ?? null);
+    const effFrozen: string | null = null;
 
     let effBackup = remote.lastCountBackup !== undefined ? remote.lastCountBackup : undefined;
     if (isPreviousDay) {
@@ -1230,8 +1241,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Contagem ou recontagem em andamento na base ativa
   const isCountInProgress = activeBranch === 'PAULO AFONSO' ? isCountInProgressPA : isCountInProgressDEL;
 
-  // Bloqueio global nas duas bases durante contagem iniciada ou recontagem liberada em andamento
-  const isAnyBaseCountInProgress = isCountInProgressPA || isCountInProgressDEL;
+  // Bloqueio isolado por base: contagem/recontagem em uma base bloqueia somente os usuários daquela base
+  const isAnyBaseCountInProgress = isCountInProgress;
 
   // Permissão do usuário ativo para realizar contagens normais (Materiais / Equipamentos) na base atual
   const canActiveUserCount = useMemo(() => {
@@ -2023,26 +2034,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem(getBranchStorageKey(activeBranch, 'last_count_backup'), JSON.stringify(backup));
     }
 
-    // Preserva prévia congelada caso ainda não exista
-    if (!frozenReportText) {
-      const currentReport = generateStockReportText({
-        selectedStock: 'ambos',
-        todayDateFormatted: formatDateBR(todayKey),
-        activeUser,
-        defaultSenderEmail,
-        recipients: emailSettings.emails,
-        materials,
-        freezers,
-        equipments,
-        uncataloguedEquipments,
-        materialCounts,
-        equipmentCounts,
-        includeEquipmentDefects: false,
-        branch: activeBranch,
-        isMobile: isPhoneFrame,
-      });
-      setFrozenReportText(currentReport);
-      localStorage.setItem(getBranchStorageKey(activeBranch, 'frozen_report'), currentReport);
+    // Limpa prévia congelada para que a Prévia do Relatório seja atualizada automaticamente
+    if (frozenReportText !== null) {
+      setFrozenReportText(null);
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'frozen_report'));
     }
 
     // Calcula estados remanescentes dependendo do escopo
@@ -2544,7 +2539,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const targetBranch = activeBranchRef.current;
 
     try {
-      const payload = buildActiveBranchSyncPayload(targetBranch);
+      setFrozenReportText(null);
+      localStorage.removeItem(getBranchStorageKey(targetBranch, 'frozen_report'));
+      const payload = buildActiveBranchSyncPayload(targetBranch, { frozenReportText: null });
       const tasks: Promise<void>[] = [pushBranchToFirestore(targetBranch, payload)];
       if (pendingUsersSync) {
         tasks.push(pushUsersToFirestore(users));
@@ -2760,9 +2757,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const statusPA = evaluateBranchStatus('PAULO AFONSO', remotePA);
     const statusDEL = evaluateBranchStatus('DELMIRO', remoteDEL);
 
-    // EXIGÊNCIA: Durante contagem inicial ou recontagem em andamento em qualquer base, usuários Master e demais contadores não podem acessar
+    // EXIGÊNCIA: O bloqueio de acesso vale somente para usuários da mesma base; contagem/recontagem em uma base não bloqueia a outra
     if (user.roleLevel === 'master') {
-      if (statusPA.isCountInProgress || statusDEL.isCountInProgress || statusPA.recontagemUnlocked || statusDEL.recontagemUnlocked) {
+      const targetStatus = targetBranch === 'PAULO AFONSO' ? statusPA : statusDEL;
+      if (targetStatus.isCountInProgress || targetStatus.recontagemUnlocked) {
         return {
           success: false,
           message: 'Existe contagem em andamento.'
@@ -3493,11 +3491,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     targetStock?: 'materiais' | 'equipamentos' | 'ambos',
     targetBranch?: UnitBranch
   ) => {
-    if (isMaster && isAnyBaseCountInProgress) {
+    const branchToUse = targetBranch || activeBranch;
+    const isTargetBranchInProgress =
+      branchToUse === 'PAULO AFONSO' ? isCountInProgressPA : isCountInProgressDEL;
+    if (isMaster && isTargetBranchInProgress) {
       return { materialsAdded: 0, freezersAdded: 0, equipmentsAdded: 0, message: 'Existe contagem em andamento.' };
     }
 
-    const branchToUse = targetBranch || activeBranch;
     if (branchToUse !== activeBranch) {
       setActiveBranch(branchToUse);
     }
@@ -3593,63 +3593,23 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     stock: 'materiais' | 'equipamentos' | 'ambos',
     branchTarget: UnitBranch | 'AMBAS' = activeBranch
   ) => {
-    if (isMaster && isAnyBaseCountInProgress) return;
+    if (isMaster) {
+      const blocked = branchTarget === 'AMBAS'
+        ? (isCountInProgressPA || isCountInProgressDEL)
+        : branchTarget === 'PAULO AFONSO'
+          ? isCountInProgressPA
+          : isCountInProgressDEL;
+      if (blocked) return;
+    }
 
     const targetBranches: UnitBranch[] =
       branchTarget === 'AMBAS' ? ['PAULO AFONSO', 'DELMIRO'] : [branchTarget];
 
     targetBranches.forEach(branch => {
-      const readBranchJson = <T,>(subKey: string, fallback: T): T => {
-        try {
-          const raw = localStorage.getItem(getBranchStorageKey(branch, subKey));
-          return raw ? JSON.parse(raw) : fallback;
-        } catch {
-          return fallback;
-        }
-      };
-
-      const branchMaterials = branch === activeBranch ? materials : readBranchJson<MaterialItem[]>('materials', []);
-      const branchFreezers = branch === activeBranch ? freezers : readBranchJson<FreezerItem[]>('freezers', []);
-      const branchEquipments = branch === activeBranch ? equipments : readBranchJson<EquipmentItem[]>('equipments', []);
-      const branchMatCounts = branch === activeBranch ? materialCounts : readBranchJson<Record<string, MaterialDailyEntry>>('today_materials', {});
-      const branchEqCounts = branch === activeBranch ? equipmentCounts : readBranchJson<Record<string, EquipmentDailyEntry>>('today_equipments', {});
-      const branchUncat = branch === activeBranch ? uncataloguedEquipments : readBranchJson<UncataloguedEquipment[]>('today_uncatalogued', []);
-      const branchEmails = branch === activeBranch
-        ? emailSettings
-        : readBranchJson<EmailSettings>('email_settings', INITIAL_EMAIL_SETTINGS);
-      const branchSender = branch === activeBranch
-        ? defaultSenderEmail
-        : (readBranchJson<ServerEmailConfig>('server_email_config', INITIAL_SERVER_EMAIL_CONFIG).senderEmail || defaultSenderEmail);
-
-      // Preserva a prévia congelada caso haja contagens relevantes registradas na base
-      const hasMatCounts = Object.keys(branchMatCounts).length > 0;
-      const hasEqCounts = Object.keys(branchEqCounts).length > 0 || branchUncat.length > 0;
-      const shouldFreeze =
-        (stock === 'materiais' && hasMatCounts) ||
-        (stock === 'equipamentos' && hasEqCounts) ||
-        (stock === 'ambos' && (hasMatCounts || hasEqCounts));
-
-      const existingFrozen = localStorage.getItem(getBranchStorageKey(branch, 'frozen_report'));
-      if (shouldFreeze && (!existingFrozen || existingFrozen === '__CLEARED__' || existingFrozen === '__CLEARED_COUNTS__')) {
-        const generated = generateStockReportText({
-          selectedStock: 'ambos',
-          todayDateFormatted: formatDateBR(todayKey),
-          activeUser,
-          defaultSenderEmail: branchSender,
-          recipients: branchEmails.emails,
-          materials: branchMaterials,
-          freezers: branchFreezers,
-          equipments: branchEquipments,
-          uncataloguedEquipments: branchUncat,
-          materialCounts: branchMatCounts,
-          equipmentCounts: branchEqCounts,
-          includeEquipmentDefects: true,
-          branch,
-        });
-        localStorage.setItem(getBranchStorageKey(branch, 'frozen_report'), generated);
-        if (branch === activeBranch) {
-          setFrozenReportText(generated);
-        }
+      // Remove prévia congelada para que a Prévia do Relatório atualize automaticamente
+      localStorage.removeItem(getBranchStorageKey(branch, 'frozen_report'));
+      if (branch === activeBranch) {
+        setFrozenReportText(null);
       }
 
       if (stock === 'materiais' || stock === 'ambos') {

@@ -172,7 +172,7 @@ const AppContent: React.FC = () => {
                     Existe contagem em andamento.
                   </p>
                   <p className="text-[10px] text-amber-900 mt-0.5">
-                    Modo somente leitura ativo: não é permitida nenhuma mudança no cadastro de Materiais, Equipamentos e Usuários, nem alteração na contagem nas duas bases até o envio por e-mail.
+                    Modo somente leitura ativo: não é permitida nenhuma mudança no cadastro de Materiais, Equipamentos e Usuários, nem alteração na contagem desta base até o envio por e-mail.
                   </p>
                 </div>
               </div>

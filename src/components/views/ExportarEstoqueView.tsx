@@ -15,7 +15,11 @@ import {
   X
 } from 'lucide-react';
 import { useInventory, getBranchStorageKey } from '../../context/InventoryContext';
-import { generateStockReportText, generateStockReportHtml } from '../../utils/reportGenerator';
+import {
+  generateStockReportText,
+  generateStockReportHtml,
+  generateStockReportEmailTableText,
+} from '../../utils/reportGenerator';
 import { sendEmailDirectly } from '../../utils/emailSender';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
 
@@ -181,29 +185,55 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
       branch: activeBranch,
     });
 
-    // Copia silenciosamente o relatório para a área de transferência com formatação rica (HTML e texto)
+    const isFrozenWithData =
+      frozenReportText !== null &&
+      frozenReportText !== '__CLEARED__' &&
+      frozenReportText !== '__CLEARED_COUNTS__';
+
+    const emailTableBody = isFrozenWithData
+      ? frozenReportText
+      : generateStockReportEmailTableText({
+          selectedStock,
+          todayDateFormatted,
+          activeUser,
+          defaultSenderEmail,
+          recipients: effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients,
+          materials,
+          freezers,
+          equipments,
+          uncataloguedEquipments,
+          materialCounts,
+          equipmentCounts,
+          includeEquipmentDefects,
+          branch: activeBranch,
+          isMobile: isPhoneFrame,
+        });
+
+    // Copia o relatório em formato de tabela (HTML rico e tabela em texto) para a área de transferência
     if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
       try {
-        const blobText = new Blob([activeReportPreview], { type: 'text/plain' });
+        const blobText = new Blob([emailTableBody], { type: 'text/plain' });
         const blobHtml = new Blob([reportHtml], { type: 'text/html' });
-        navigator.clipboard.write([
+        await navigator.clipboard.write([
           new ClipboardItem({
             'text/plain': blobText,
             'text/html': blobHtml,
           }),
-        ]).catch(() => {});
+        ]);
       } catch {
-        // Ignora silenciosamente
+        navigator.clipboard.writeText(emailTableBody).catch(() => {});
       }
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(emailTableBody).catch(() => {});
     }
 
-    // Tenta também envio direto com corpo HTML em segundo plano se houver servidor configurado
+    // Tenta também envio direto com corpo HTML e tabela em texto em segundo plano se houver servidor configurado
     sendEmailDirectly({
       fromEmail: serverEmailConfig?.senderEmail || defaultSenderEmail,
       senderName: serverEmailConfig?.senderName || 'CONTAGEM DE ESTOQUE',
       toEmails: effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients,
       subject,
-      bodyText: activeReportPreview,
+      bodyText: emailTableBody,
       htmlBody: reportHtml,
       smtpConfig: serverEmailConfig,
     }).catch(() => {});
@@ -223,8 +253,8 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
       setIsSendingEmail(false);
     }
 
-    // Abre o programa padrão de e-mail do dispositivo com destinatário no Para (To), copiados no Cc, assunto e relatório de contagem no corpo
-    let mailtoUrl = `mailto:${encodeURIComponent(effectiveTo)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(activeReportPreview)}`;
+    // Abre o programa padrão de e-mail do dispositivo com destinatário no Para (To), copiados no Cc, assunto e tabela no corpo
+    let mailtoUrl = `mailto:${encodeURIComponent(effectiveTo)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailTableBody)}`;
     if (effectiveCc) {
       mailtoUrl += `&cc=${encodeURIComponent(effectiveCc)}`;
     }

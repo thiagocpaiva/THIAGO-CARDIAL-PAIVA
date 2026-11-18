@@ -75,7 +75,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
     deleteFreezer, 
     deleteEquipment,
     deleteUnregisteredItemEntireHistory,
-    clearAllData,
+    clearSelectedData,
     importBaseItems,
     isMaster,
     isContadorActive,
@@ -91,6 +91,8 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'materiais' | 'freezers' | 'equipamentos' | 'nao_cadastrados'>(initialFilterType || 'all');
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [clearStockTarget, setClearStockTarget] = useState<'materiais' | 'equipamentos' | 'ambos'>('ambos');
+  const [clearBranchTarget, setClearBranchTarget] = useState<UnitBranch | 'AMBAS'>(activeBranch);
 
   useEffect(() => {
     if (initialFilterType) {
@@ -119,6 +121,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
   useEffect(() => {
     setTargetImportBranch(activeBranch);
     setTargetDownloadBranch(activeBranch);
+    setClearBranchTarget(activeBranch);
   }, [activeBranch]);
 
   // EXIGÊNCIA: Na tela Cadastro, ao clicar no botão "Exportar", aparecer tela perguntando de qual estoque deseja exportar, "Materiais", "Equipamentos", "Ambos".
@@ -1224,7 +1227,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
           </div>
         </div>
 
-        {/* Botões Master: Sincronizar Dados e Zerar Todos os Cadastros */}
+        {/* Botões Master: Sincronizar Dados e Zerar Cadastros */}
         {isMaster && (
           <div className="flex items-center gap-2 flex-wrap">
             <button
@@ -1256,35 +1259,179 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() => {
-                if (isContadorActive) {
-                  showToast('Existe usuário realizando contagem no momento.');
+                if (isAnyBaseCountInProgress || isContadorActive) {
+                  showToast('Existe contagem em andamento.');
                   return;
                 }
+                setClearBranchTarget(activeBranch);
+                setClearStockTarget('ambos');
                 setConfirmClearOpen(true);
               }}
-              disabled={isContadorActive}
+              disabled={isAnyBaseCountInProgress || isContadorActive}
               className="px-3 py-2 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
-              title="Apagar todos os cadastros"
+              title="Escolher e zerar cadastros da base"
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-              <span>Zerar Todos os Cadastros</span>
+              <span>Zerar Cadastros</span>
             </button>
           </div>
         )}
       </div>
 
-      {/* Modal de Confirmação para Zerar Base */}
+      {/* Modal de Seleção e Confirmação para Zerar Cadastros */}
       {confirmClearOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in">
-          <div className="bg-white border border-slate-200 w-full max-w-md rounded-3xl p-5 space-y-4 shadow-2xl">
-            <div className="flex items-center gap-2.5 text-rose-600 font-extrabold text-sm sm:text-base">
-              <AlertTriangle className="w-5 h-5 shrink-0" />
-              <span>Zerar Toda a Base de Cadastros?</span>
+          <div className="bg-white border border-slate-200 w-full max-w-lg rounded-3xl p-5 sm:p-6 space-y-4 shadow-2xl text-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5 text-rose-600 font-extrabold text-sm sm:text-base">
+                <div className="w-9 h-9 rounded-2xl bg-rose-100 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-rose-600" />
+                </div>
+                <div>
+                  <span className="block text-slate-900">Zerar Cadastros</span>
+                  <span className="block text-[11px] font-semibold text-rose-700">
+                    Escolha qual cadastro e qual base deseja zerar
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmClearOpen(false)}
+                className="w-7 h-7 rounded-full bg-slate-100 text-slate-500 hover:text-slate-800 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Esta ação excluirá permanentemente todos os materiais, freezers e chopeiras cadastrados na base, bem como as contagens salvas.
-            </p>
+
+            {/* Seleção da Base */}
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+              <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-rose-600" />
+                <span>Base de Destino:</span>
+              </span>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setClearBranchTarget('PAULO AFONSO')}
+                  className={`p-2 rounded-xl border text-[11px] font-black transition-all cursor-pointer ${
+                    clearBranchTarget === 'PAULO AFONSO'
+                      ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  PAULO AFONSO
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClearBranchTarget('DELMIRO')}
+                  className={`p-2 rounded-xl border text-[11px] font-black transition-all cursor-pointer ${
+                    clearBranchTarget === 'DELMIRO'
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs ring-2 ring-slate-400'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  DELMIRO
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClearBranchTarget('AMBAS')}
+                  className={`p-2 rounded-xl border text-[11px] font-black transition-all cursor-pointer ${
+                    clearBranchTarget === 'AMBAS'
+                      ? 'bg-rose-600 text-white border-rose-600 shadow-xs ring-2 ring-rose-300'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  AMBAS AS BASES
+                </button>
+              </div>
+            </div>
+
+            {/* Escolha de qual cadastro deseja zerar */}
+            <div className="space-y-2">
+              <span className="text-xs font-bold text-slate-700 block">
+                Qual cadastro deseja zerar?
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setClearStockTarget('materiais')}
+                  className={`p-3 rounded-2xl border-2 text-left transition-all cursor-pointer flex flex-col justify-between ${
+                    clearStockTarget === 'materiais'
+                      ? 'border-amber-500 bg-amber-50 ring-2 ring-amber-200 shadow-xs'
+                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="w-7 h-7 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center mb-1.5">
+                    <Layers className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-black text-slate-900 block uppercase">Materiais</span>
+                    <span className="text-[10px] text-slate-600 block leading-tight mt-0.5">
+                      Zera apenas os materiais cadastrados.
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setClearStockTarget('equipamentos')}
+                  className={`p-3 rounded-2xl border-2 text-left transition-all cursor-pointer flex flex-col justify-between ${
+                    clearStockTarget === 'equipamentos'
+                      ? 'border-sky-500 bg-sky-50 ring-2 ring-sky-200 shadow-xs'
+                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="w-7 h-7 rounded-xl bg-sky-600 text-white flex items-center justify-center mb-1.5">
+                    <Snowflake className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-black text-slate-900 block uppercase">Equipamentos</span>
+                    <span className="text-[10px] text-slate-600 block leading-tight mt-0.5">
+                      Zera apenas freezers e chopeiras cadastrados.
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setClearStockTarget('ambos')}
+                  className={`p-3 rounded-2xl border-2 text-left transition-all cursor-pointer flex flex-col justify-between ${
+                    clearStockTarget === 'ambos'
+                      ? 'border-rose-500 bg-rose-50 ring-2 ring-rose-200 shadow-xs'
+                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="w-7 h-7 rounded-xl bg-rose-600 text-white flex items-center justify-center mb-1.5">
+                    <Database className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-black text-slate-900 block uppercase">Ambos</span>
+                    <span className="text-[10px] text-slate-600 block leading-tight mt-0.5">
+                      Zera materiais e equipamentos juntos.
+                    </span>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-900 leading-relaxed">
+              Esta ação excluirá permanentemente o cadastro de{' '}
+              <strong>
+                {clearStockTarget === 'materiais'
+                  ? 'Materiais'
+                  : clearStockTarget === 'equipamentos'
+                    ? 'Equipamentos (Freezers e Chopeiras)'
+                    : 'Materiais e Equipamentos'}
+              </strong>{' '}
+              na base{' '}
+              <strong>
+                {clearBranchTarget === 'AMBAS' ? 'PAULO AFONSO e DELMIRO' : clearBranchTarget}
+              </strong>
+              . Após confirmar, clique em <strong>"Sincronizar Dados"</strong> para atualizar o Firebase.
+            </div>
+
             <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
               <button
                 type="button"
@@ -1296,13 +1443,21 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  clearAllData();
+                  clearSelectedData(clearStockTarget, clearBranchTarget);
                   setConfirmClearOpen(false);
-                  showToast('Todos os cadastros foram excluídos da base.');
+                  const stockText =
+                    clearStockTarget === 'materiais'
+                      ? 'de Materiais'
+                      : clearStockTarget === 'equipamentos'
+                        ? 'de Equipamentos'
+                        : 'de Materiais e Equipamentos';
+                  const branchText =
+                    clearBranchTarget === 'AMBAS' ? 'PAULO AFONSO e DELMIRO' : clearBranchTarget;
+                  showToast(`Cadastro ${stockText} zerado na base ${branchText}.`);
                 }}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl cursor-pointer"
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl cursor-pointer shadow-xs"
               >
-                Sim, Zerar Tudo
+                Sim, Zerar Cadastro
               </button>
             </div>
           </div>

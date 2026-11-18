@@ -31,7 +31,11 @@ import {
   X
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
-import { generateStockReportText, generateStockReportHtml } from '../../utils/reportGenerator';
+import {
+  generateStockReportText,
+  generateStockReportHtml,
+  generateStockReportEmailTableText,
+} from '../../utils/reportGenerator';
 import { sendEmailDirectly, SendEmailResult, inferServerConfig, testServerCommunication } from '../../utils/emailSender';
 import { MaterialItem, FreezerItem, EquipmentItem, ServerEmailConfig } from '../../types/inventory';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
@@ -350,7 +354,7 @@ export const OpcoesEnvioView: React.FC<OpcoesEnvioViewProps> = ({
         branch: activeBranch,
       });
 
-      const text = generateStockReportText({
+      const text = generateStockReportEmailTableText({
         selectedStock: stockChoice,
         todayDateFormatted,
         activeUser,

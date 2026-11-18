@@ -143,6 +143,7 @@ interface InventoryContextType {
   // Utilitários
   addLog: (log: Omit<SystemLog, 'id' | 'timestamp'>) => void;
   clearAllData: () => void;
+  clearSelectedData: (stock: 'materiais' | 'equipamentos' | 'ambos', branchTarget?: UnitBranch | 'AMBAS') => void;
 
   // Prévia e Preservação da Contagem
   frozenReportText: string | null;
@@ -3083,47 +3084,110 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { materialsAdded: mCount, freezersAdded: fCount, equipmentsAdded: eqCount, message: summaryMsg };
   };
 
-  const clearAllData = () => {
+  const clearSelectedData = (
+    stock: 'materiais' | 'equipamentos' | 'ambos',
+    branchTarget: UnitBranch | 'AMBAS' = activeBranch
+  ) => {
     if (isMaster && isAnyBaseCountInProgress) return;
 
-    // EXIGÊNCIA: Na tela Cadastros, ao clicar o botão "Zerar Todos os Cadastros",
-    // manter as informações no campo "PRÉVIA DO RELATÓRIO" caso tenha alguma informação de contagens.
-    const hasAnyCounts =
-      Object.keys(materialCounts).length > 0 ||
-      Object.keys(equipmentCounts).length > 0 ||
-      uncataloguedEquipments.length > 0;
+    const targetBranches: UnitBranch[] =
+      branchTarget === 'AMBAS' ? ['PAULO AFONSO', 'DELMIRO'] : [branchTarget];
 
-    if (hasAnyCounts) {
-      const generated = generateStockReportText({
-        selectedStock: 'ambos',
-        todayDateFormatted: formatDateBR(todayKey),
-        activeUser,
-        defaultSenderEmail,
-        recipients: emailSettings.emails,
-        materials,
-        freezers,
-        equipments,
-        uncataloguedEquipments,
-        materialCounts,
-        equipmentCounts,
-        includeEquipmentDefects: true,
-      });
-      setFrozenReportText(generated);
-      localStorage.setItem(getBranchStorageKey(activeBranch, 'frozen_report'), generated);
-    }
+    targetBranches.forEach(branch => {
+      const readBranchJson = <T,>(subKey: string, fallback: T): T => {
+        try {
+          const raw = localStorage.getItem(getBranchStorageKey(branch, subKey));
+          return raw ? JSON.parse(raw) : fallback;
+        } catch {
+          return fallback;
+        }
+      };
 
-    // EXIGÊNCIA 3: Na tela Cadastro, ao pressionar o botão "Zerar Todos os Cadastros", limpar também os equipamentos contados que não estão cadastrados na base ativa.
-    setMaterials([]);
-    setFreezers([]);
-    setEquipments([]);
-    setUncataloguedEquipments([]);
-    localStorage.removeItem(getBranchStorageKey(activeBranch, 'materials'));
-    localStorage.removeItem(getBranchStorageKey(activeBranch, 'freezers'));
-    localStorage.removeItem(getBranchStorageKey(activeBranch, 'equipments'));
-    localStorage.removeItem(getBranchStorageKey(activeBranch, 'today_uncatalogued'));
+      const branchMaterials = branch === activeBranch ? materials : readBranchJson<MaterialItem[]>('materials', []);
+      const branchFreezers = branch === activeBranch ? freezers : readBranchJson<FreezerItem[]>('freezers', []);
+      const branchEquipments = branch === activeBranch ? equipments : readBranchJson<EquipmentItem[]>('equipments', []);
+      const branchMatCounts = branch === activeBranch ? materialCounts : readBranchJson<Record<string, MaterialDailyEntry>>('today_materials', {});
+      const branchEqCounts = branch === activeBranch ? equipmentCounts : readBranchJson<Record<string, EquipmentDailyEntry>>('today_equipments', {});
+      const branchUncat = branch === activeBranch ? uncataloguedEquipments : readBranchJson<UncataloguedEquipment[]>('today_uncatalogued', []);
+      const branchEmails = branch === activeBranch
+        ? emailSettings
+        : readBranchJson<EmailSettings>('email_settings', INITIAL_EMAIL_SETTINGS);
+      const branchSender = branch === activeBranch
+        ? defaultSenderEmail
+        : (readBranchJson<ServerEmailConfig>('server_email_config', INITIAL_SERVER_EMAIL_CONFIG).senderEmail || defaultSenderEmail);
+
+      // Preserva a prévia congelada caso haja contagens relevantes registradas na base
+      const hasMatCounts = Object.keys(branchMatCounts).length > 0;
+      const hasEqCounts = Object.keys(branchEqCounts).length > 0 || branchUncat.length > 0;
+      const shouldFreeze =
+        (stock === 'materiais' && hasMatCounts) ||
+        (stock === 'equipamentos' && hasEqCounts) ||
+        (stock === 'ambos' && (hasMatCounts || hasEqCounts));
+
+      const existingFrozen = localStorage.getItem(getBranchStorageKey(branch, 'frozen_report'));
+      if (shouldFreeze && (!existingFrozen || existingFrozen === '__CLEARED__' || existingFrozen === '__CLEARED_COUNTS__')) {
+        const generated = generateStockReportText({
+          selectedStock: 'ambos',
+          todayDateFormatted: formatDateBR(todayKey),
+          activeUser,
+          defaultSenderEmail: branchSender,
+          recipients: branchEmails.emails,
+          materials: branchMaterials,
+          freezers: branchFreezers,
+          equipments: branchEquipments,
+          uncataloguedEquipments: branchUncat,
+          materialCounts: branchMatCounts,
+          equipmentCounts: branchEqCounts,
+          includeEquipmentDefects: true,
+          branch,
+        });
+        localStorage.setItem(getBranchStorageKey(branch, 'frozen_report'), generated);
+        if (branch === activeBranch) {
+          setFrozenReportText(generated);
+        }
+      }
+
+      if (stock === 'materiais' || stock === 'ambos') {
+        localStorage.setItem(getBranchStorageKey(branch, 'materials'), JSON.stringify([]));
+        if (branch === activeBranch) {
+          setMaterials([]);
+        }
+      }
+
+      if (stock === 'equipamentos' || stock === 'ambos') {
+        localStorage.setItem(getBranchStorageKey(branch, 'freezers'), JSON.stringify([]));
+        localStorage.setItem(getBranchStorageKey(branch, 'equipments'), JSON.stringify([]));
+        localStorage.setItem(getBranchStorageKey(branch, 'today_uncatalogued'), JSON.stringify([]));
+        if (branch === activeBranch) {
+          setFreezers([]);
+          setEquipments([]);
+          setUncataloguedEquipments([]);
+        }
+      }
+    });
+
+    const stockLabel =
+      stock === 'materiais'
+        ? 'Materiais'
+        : stock === 'equipamentos'
+          ? 'Equipamentos'
+          : 'Materiais e Equipamentos';
+    const branchLabel = branchTarget === 'AMBAS' ? 'PAULO AFONSO e DELMIRO' : branchTarget;
+
+    addLog({
+      type: 'exclusao',
+      targetType: stock === 'materiais' ? 'material' : stock === 'equipamentos' ? 'equipamento' : 'contagem',
+      itemCode: 'ZERAR',
+      title: `Cadastros Zerados (${stockLabel})`,
+      description: `Cadastro de ${stockLabel} zerado na base ${branchLabel}.`,
+    });
 
     if (isMaster) markMasterChangesPending();
     broadcastSync('BASE_UPDATED');
+  };
+
+  const clearAllData = () => {
+    clearSelectedData('ambos', activeBranch);
   };
 
   // --- GESTÃO DE RECONTAGEM (100% INDEPENDENTE POR BASE) ---
@@ -3402,6 +3466,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setDefaultEmail,
         addLog,
         clearAllData,
+        clearSelectedData,
         recontagemSelectedIds,
         recontagemMaterialCounts,
         recontagemEquipmentCounts,

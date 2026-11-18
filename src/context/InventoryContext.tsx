@@ -73,6 +73,9 @@ interface InventoryContextType {
   releaseRecontagemForContador: (targetContador?: StockUser | null) => Promise<{ success: boolean; message: string }>;
   revokeRecontagemForContador: () => Promise<{ success: boolean; message: string }>;
   markRecountAsSent: () => Promise<{ synced: boolean; message?: string }>;
+  cancelRecontagemByContador: () => Promise<{ synced: boolean; message: string }>;
+  systemNotice: string | null;
+  setSystemNotice: (msg: string | null) => void;
 
   // Sincronização Manual com Firebase (Apenas Master na tela Cadastros)
   syncMasterDataToFirebase: () => Promise<{ success: boolean; message: string }>;
@@ -287,6 +290,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [activeBranch]);
 
   // Catálogos isolados por base (clonados na primeira execução para PAULO AFONSO e DELMIRO)
+  const [systemNotice, setSystemNotice] = useState<string | null>(null);
+
   const [materials, setMaterials] = useState<MaterialItem[]>(() => {
     return loadInitialBranchData(
       activeBranch,
@@ -2445,6 +2450,88 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { synced, message: errorMsg };
   };
 
+  // Cancela a recontagem ativa pelo usuário Contador, excluindo a recontagem do mesmo e liberando o acesso ao usuário Master
+  const cancelRecontagemByContador = async (): Promise<{ synced: boolean; message: string }> => {
+    if (!activeUser || activeUser.roleLevel !== 'contador') {
+      return { synced: false, message: 'Apenas o usuário Contador pode cancelar a recontagem ativa.' };
+    }
+    if (!recontagemUnlocked || !canActiveUserRecount) {
+      return { synced: false, message: 'Não há recontagem ativa para este contador.' };
+    }
+
+    const branchToCancel = activeBranchRef.current;
+
+    setRecontagemSelectedIds({});
+    setRecontagemMaterialCounts({});
+    setRecontagemEquipmentCounts({});
+    setRecontagemTargetContador(null);
+    setRecontagemUnlocked(false);
+    setActiveContadorSession(null);
+
+    localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_selected_ids'), JSON.stringify({}));
+    localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_material_counts'), JSON.stringify({}));
+    localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_equipment_counts'), JSON.stringify({}));
+    localStorage.removeItem(getBranchStorageKey(branchToCancel, 'recontagem_target_contador'));
+    localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_unlocked'), JSON.stringify(false));
+    localStorage.removeItem(getBranchStorageKey(branchToCancel, 'active_contador_session'));
+
+    const updateStatus = (prev: {
+      countStartedBy: CountStartedBy | null;
+      recontagemTargetContador: CountStartedBy | null;
+      isReportSent: boolean;
+      recontagemUnlocked: boolean;
+      activeContadorSession: ContadorSession | null;
+      hasCounts: boolean;
+    }) => ({
+      ...prev,
+      recontagemTargetContador: null,
+      recontagemUnlocked: false,
+      activeContadorSession: null,
+    });
+    if (branchToCancel === 'PAULO AFONSO') {
+      setBranchStatusPA(updateStatus);
+    } else {
+      setBranchStatusDEL(updateStatus);
+    }
+
+    let synced = false;
+    let message = `Recontagem cancelada na base ${branchToCancel}. O acesso foi liberado novamente para o usuário Master.`;
+    try {
+      await pushBranchToFirestore(
+        branchToCancel,
+        buildActiveBranchSyncPayload(branchToCancel, {
+          recontagemSelectedIds: {},
+          recontagemMaterialCounts: {},
+          recontagemEquipmentCounts: {},
+          recontagemTargetContador: null,
+          recontagemUnlocked: false,
+          activeContadorSession: null,
+        })
+      );
+      const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setLastFirebaseSyncAt(syncTime);
+      localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
+      synced = true;
+    } catch (err) {
+      console.warn('Erro ao sincronizar cancelamento da recontagem com o Firestore:', err);
+      message = isQuotaExceededError(err)
+        ? `Recontagem cancelada localmente na base ${branchToCancel} (cota diária do Firebase atingida).`
+        : `Recontagem cancelada localmente na base ${branchToCancel}, mas houve falha ao sincronizar com o Firebase.`;
+    }
+
+    broadcastSync('RECONTAGEM_UPDATED');
+    setSystemNotice(message);
+    addLog({
+      type: 'exclusao',
+      targetType: 'contagem',
+      itemCode: 'RECOUNT-CANCEL',
+      title: `Recontagem Cancelada pelo Contador [${branchToCancel}]`,
+      description: `Recontagem cancelada pelo contador ${activeUser.name} (${activeUser.registration}) na base ${branchToCancel}. Acesso liberado novamente ao usuário Master.`,
+    });
+
+    return { synced, message };
+  };
+
   // --- SINCRONIZAÇÃO MANUAL DO USUÁRIO MASTER (BOTÃO NA TELA CADASTROS - APENAS BASE LOGADA) ---
   const syncMasterDataToFirebase = async (): Promise<{ success: boolean; message: string }> => {
     if (!isMaster) {
@@ -3846,6 +3933,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         releaseRecontagemForContador,
         revokeRecontagemForContador,
         markRecountAsSent,
+        cancelRecontagemByContador,
+        systemNotice,
+        setSystemNotice,
         syncMasterDataToFirebase,
         hasPendingMasterSync,
         lastFirebaseSyncAt,

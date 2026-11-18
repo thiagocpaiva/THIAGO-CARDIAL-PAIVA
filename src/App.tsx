@@ -17,7 +17,7 @@ import { CadastrarFreezerModal } from './components/modals/CadastrarFreezerModal
 import { CadastrarEquipamentoModal } from './components/modals/CadastrarEquipamentoModal';
 
 import { MaterialItem, MaterialCategory, FreezerItem, EquipmentItem } from './types/inventory';
-import { Wifi, Battery, Signal, Lock, AlertTriangle } from 'lucide-react';
+import { Wifi, Battery, Signal, Lock, AlertTriangle, Check, X } from 'lucide-react';
 
 const AppContent: React.FC = () => {
   const { 
@@ -35,8 +35,16 @@ const AppContent: React.FC = () => {
     isPhoneFrame,
     setIsPhoneFrame,
     emptyMaterialCodesAlert,
-    setEmptyMaterialCodesAlert
+    setEmptyMaterialCodesAlert,
+    systemNotice,
+    setSystemNotice
   } = useInventory();
+
+  React.useEffect(() => {
+    if (!systemNotice) return;
+    const timer = setTimeout(() => setSystemNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [systemNotice, setSystemNotice]);
   
   const [activeTab, setActiveTab] = useState<MainTab>('materiais');
 
@@ -136,6 +144,22 @@ const AppContent: React.FC = () => {
         {/* View Content Area */}
         <main className="flex-1 p-3.5 sm:p-4 overflow-y-auto bg-white">
           
+          {systemNotice && (
+            <div className="mb-3.5 p-3 bg-emerald-50 border border-emerald-300 rounded-2xl shadow-xs text-emerald-950 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
+              <div className="flex items-center gap-2 min-w-0">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{systemNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSystemNotice(null)}
+                className="p-1 text-emerald-700 hover:text-emerald-900 rounded-lg cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* Alerta Global para Usuário Master quando há Contagem em Andamento */}
           {isMaster && isAnyBaseCountInProgress && (
             <div className="mb-3.5 p-3.5 bg-amber-50 border-2 border-amber-400 rounded-2xl shadow-sm text-slate-900 flex items-center justify-between gap-2.5 animate-in fade-in">

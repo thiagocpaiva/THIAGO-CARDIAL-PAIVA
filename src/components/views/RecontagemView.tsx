@@ -44,6 +44,7 @@ export const RecontagemView: React.FC = () => {
     canActiveUserRecount,
     releaseRecontagemForContador,
     markRecountAsSent,
+    cancelRecontagemByContador,
     recontagemSelectedIds,
     recontagemMaterialCounts,
     recontagemEquipmentCounts,
@@ -66,6 +67,8 @@ export const RecontagemView: React.FC = () => {
   const [uncountedSearchQuery, setUncountedSearchQuery] = useState('');
   const [isReleasingRecount, setIsReleasingRecount] = useState(false);
   const [isSendingRecountEmail, setIsSendingRecountEmail] = useState(false);
+  const [isCancellingRecount, setIsCancellingRecount] = useState(false);
+  const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState(false);
   const [selectedTargetContadorId, setSelectedTargetContadorId] = useState<string>('');
 
   // No Master, permite alternar entre a tela de Seleção e a Prévia do Contador
@@ -425,6 +428,71 @@ export const RecontagemView: React.FC = () => {
             {recontagemSelectedCount} {recontagemSelectedCount === 1 ? 'item' : 'itens'}
           </span>
         </div>
+
+        {/* Botão Cancelar Recontagem (apenas para Contador com recontagem ativa) */}
+        {!isMaster && recontagemUnlocked && canActiveUserRecount && (
+          <div className="p-3 bg-white border border-rose-200 rounded-2xl flex items-center justify-between gap-2.5 shadow-xs">
+            <p className="text-[11px] text-slate-600 font-medium leading-snug">
+              Se precisar cancelar esta recontagem, ela será excluída e o acesso do usuário Master será liberado novamente.
+            </p>
+            <button
+              type="button"
+              disabled={isCancellingRecount}
+              onClick={() => setIsCancelConfirmOpen(true)}
+              className="px-3 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-extrabold rounded-xl shadow-xs active:scale-95 transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>{isCancellingRecount ? 'Cancelando...' : 'Cancelar Recontagem'}</span>
+            </button>
+          </div>
+        )}
+
+        {/* Modal de confirmação de cancelamento da recontagem */}
+        {isCancelConfirmOpen && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in">
+            <div className="bg-white border-2 border-rose-300 w-full max-w-sm rounded-3xl p-5 space-y-4 shadow-2xl text-slate-900">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-rose-100 text-rose-700 border border-rose-200 flex items-center justify-center shrink-0">
+                  <X className="w-6 h-6 stroke-[2.5]" />
+                </div>
+                <div>
+                  <h3 className="font-black text-slate-900 text-sm uppercase">Cancelar Recontagem</h3>
+                  <p className="text-[11px] text-rose-700 font-bold">Base {activeBranch}</p>
+                </div>
+              </div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Deseja excluir esta recontagem ativa? Os itens selecionados para recontagem serão removidos e o acesso ao usuário Master será liberado novamente.
+              </p>
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  disabled={isCancellingRecount}
+                  onClick={() => setIsCancelConfirmOpen(false)}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer disabled:opacity-50"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="button"
+                  disabled={isCancellingRecount}
+                  onClick={async () => {
+                    setIsCancellingRecount(true);
+                    try {
+                      const res = await cancelRecontagemByContador();
+                      setIsCancelConfirmOpen(false);
+                      showToast(res.message);
+                    } finally {
+                      setIsCancellingRecount(false);
+                    }
+                  }}
+                  className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-black rounded-xl shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {isCancellingRecount ? 'Cancelando...' : 'Confirmar Cancelamento'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Feedback Toasts */}
         {toastMessage && (

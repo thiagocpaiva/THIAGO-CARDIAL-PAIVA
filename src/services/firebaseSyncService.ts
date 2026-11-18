@@ -278,7 +278,11 @@ export async function pushBranchToFirestore(branch: UnitBranch, payload: Partial
       updatedAt: new Date().toISOString()
     };
     const cleanedData = removeUndefinedDeep(rawData);
-    await setDoc(docRef, cleanedData, { merge: true });
+    if (payload.materials !== undefined) {
+      await setDoc(docRef, cleanedData);
+    } else {
+      await setDoc(docRef, cleanedData, { merge: true });
+    }
   } catch (error) {
     if (isQuotaExceededError(error)) {
       console.warn(`Cota diária do Firestore excedida ao salvar ${path}. Aguardando redefinição da cota diária.`);

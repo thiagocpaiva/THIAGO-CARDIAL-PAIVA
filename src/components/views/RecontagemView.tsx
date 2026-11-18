@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   RotateCcw, 
   Layers, 
@@ -16,7 +16,8 @@ import {
   Lock,
   PlusCircle,
   RefreshCw,
-  UserCheck
+  UserCheck,
+  Users
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { MaterialItem, FreezerItem, EquipmentItem, MaterialDailyEntry, EquipmentDailyEntry } from '../../types/inventory';
@@ -27,6 +28,7 @@ import { GrupoMSBrand } from '../common/GrupoMSBrand';
 export const RecontagemView: React.FC = () => {
   const {
     activeUser,
+    users,
     isMaster,
     activeBranch,
     materials,
@@ -34,10 +36,13 @@ export const RecontagemView: React.FC = () => {
     equipments,
     materialCounts,
     equipmentCounts,
+    uncataloguedEquipments,
     countStartedBy,
+    recontagemTargetContador,
     recontagemUnlocked,
+    isAnyBaseCountInProgress,
+    canActiveUserRecount,
     releaseRecontagemForContador,
-    revokeRecontagemForContador,
     markRecountAsSent,
     recontagemSelectedIds,
     recontagemMaterialCounts,
@@ -61,6 +66,7 @@ export const RecontagemView: React.FC = () => {
   const [uncountedSearchQuery, setUncountedSearchQuery] = useState('');
   const [isReleasingRecount, setIsReleasingRecount] = useState(false);
   const [isSendingRecountEmail, setIsSendingRecountEmail] = useState(false);
+  const [selectedTargetContadorId, setSelectedTargetContadorId] = useState<string>('');
 
   // No Master, permite alternar entre a tela de Seleção e a Prévia do Contador
   const [masterViewMode, setMasterViewMode] = useState<'selecao' | 'contador'>('selecao');
@@ -72,6 +78,27 @@ export const RecontagemView: React.FC = () => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
   };
+
+  // Lista de usuários contadores ativos pertencentes à base atualmente logada
+  const branchContadores = useMemo(() => {
+    return users
+      .filter(u => u.roleLevel === 'contador' && u.status === 'ativo' && u.branch === activeBranch)
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR', { sensitivity: 'base' }));
+  }, [users, activeBranch]);
+
+  useEffect(() => {
+    if (recontagemTargetContador && branchContadores.some(u => u.id === recontagemTargetContador.userId)) {
+      setSelectedTargetContadorId(recontagemTargetContador.userId);
+    } else {
+      setSelectedTargetContadorId('');
+    }
+  }, [activeBranch, recontagemTargetContador?.userId]);
+
+  useEffect(() => {
+    if (recontagemSelectedCount === 0 && !recontagemUnlocked && !recontagemTargetContador) {
+      setSelectedTargetContadorId('');
+    }
+  }, [recontagemSelectedCount, recontagemUnlocked, recontagemTargetContador]);
 
   // Funções de verificação: item possui contagem inserida hoje na base ativa
   const isMaterialCountedToday = (mId: string, counts: Record<string, MaterialDailyEntry>) => {
@@ -474,16 +501,18 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center justify-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { barrilCheio: Math.max(0, (count.barrilCheio || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <span className="font-mono font-black text-xs min-w-[20px]">{count.barrilCheio || 0}</span>
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { barrilCheio: (count.barrilCheio || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -496,16 +525,18 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center justify-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { barrilVazio: Math.max(0, (count.barrilVazio || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-amber-200 text-amber-900 font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-amber-200 text-amber-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <span className="font-mono font-black text-xs min-w-[20px]">{count.barrilVazio || 0}</span>
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { barrilVazio: (count.barrilVazio || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-amber-600 text-white font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-amber-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -518,16 +549,18 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center justify-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { barrilEmRota: Math.max(0, (count.barrilEmRota || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-cyan-200 text-cyan-900 font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-cyan-200 text-cyan-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <span className="font-mono font-black text-xs min-w-[20px]">{count.barrilEmRota || 0}</span>
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { barrilEmRota: (count.barrilEmRota || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-cyan-600 text-white font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-cyan-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -542,16 +575,18 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center justify-center gap-1">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2Cheio: Math.max(0, (count.co2Cheio || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <span className="font-mono font-black text-[11px]">{count.co2Cheio || 0}</span>
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2Cheio: (count.co2Cheio || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -564,16 +599,18 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center justify-center gap-1">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2Mexido: Math.max(0, (count.co2Mexido || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-indigo-200 text-indigo-900 font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-indigo-200 text-indigo-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <span className="font-mono font-black text-[11px]">{count.co2Mexido || 0}</span>
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2Mexido: (count.co2Mexido || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-indigo-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-indigo-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -586,16 +623,18 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center justify-center gap-1">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2Vazio: Math.max(0, (count.co2Vazio || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-amber-200 text-amber-900 font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-amber-200 text-amber-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <span className="font-mono font-black text-[11px]">{count.co2Vazio || 0}</span>
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2Vazio: (count.co2Vazio || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-amber-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-amber-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -608,16 +647,18 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center justify-center gap-1">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2EmRota: Math.max(0, (count.co2EmRota || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-cyan-200 text-cyan-900 font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-cyan-200 text-cyan-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <span className="font-mono font-black text-[11px]">{count.co2EmRota || 0}</span>
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { co2EmRota: (count.co2EmRota || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-cyan-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px]"
+                                  className="w-5 h-5 rounded bg-cyan-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -633,21 +674,24 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { disponivel: Math.max(0, (count.disponivel || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <input
                                   type="number"
+                                  disabled={!canActiveUserRecount}
                                   value={count.disponivel ?? 0}
                                   onChange={e => updateRecontagemMaterialCount(mat.id, { disponivel: Math.max(0, parseInt(e.target.value) || 0) })}
-                                  className="w-12 text-center font-mono font-black bg-white border border-emerald-300 rounded py-0.5 text-xs text-emerald-950"
+                                  className="w-12 text-center font-mono font-black bg-white border border-emerald-300 rounded py-0.5 text-xs text-emerald-950 disabled:opacity-60 disabled:cursor-not-allowed"
                                 />
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { disponivel: (count.disponivel || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -660,21 +704,24 @@ export const RecontagemView: React.FC = () => {
                               <div className="flex items-center gap-1.5">
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { danificado: Math.max(0, (count.danificado || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-rose-200 text-rose-900 font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-rose-200 text-rose-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   -
                                 </button>
                                 <input
                                   type="number"
+                                  disabled={!canActiveUserRecount}
                                   value={count.danificado ?? 0}
                                   onChange={e => updateRecontagemMaterialCount(mat.id, { danificado: Math.max(0, parseInt(e.target.value) || 0) })}
-                                  className="w-12 text-center font-mono font-black bg-white border border-rose-300 rounded py-0.5 text-xs text-rose-950"
+                                  className="w-12 text-center font-mono font-black bg-white border border-rose-300 rounded py-0.5 text-xs text-rose-950 disabled:opacity-60 disabled:cursor-not-allowed"
                                 />
                                 <button
                                   type="button"
+                                  disabled={!canActiveUserRecount}
                                   onClick={() => updateRecontagemMaterialCount(mat.id, { danificado: (count.danificado || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-rose-600 text-white font-bold flex items-center justify-center active:scale-90"
+                                  className="w-6 h-6 rounded bg-rose-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   +
                                 </button>
@@ -743,6 +790,7 @@ export const RecontagemView: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
+                            disabled={!canActiveUserRecount}
                             onClick={() => {
                               if (isEmEstoque) {
                                 updateRecontagemEquipmentCount(f.id, { status: undefined });
@@ -750,7 +798,7 @@ export const RecontagemView: React.FC = () => {
                                 updateRecontagemEquipmentCount(f.id, { status: 'em_estoque', damageDescription: undefined });
                               }
                             }}
-                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                               isEmEstoque 
                                 ? 'bg-emerald-600 text-white shadow-xs' 
                                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
@@ -761,6 +809,7 @@ export const RecontagemView: React.FC = () => {
                           </button>
                           <button
                             type="button"
+                            disabled={!canActiveUserRecount}
                             onClick={() => {
                               if (isNaoConsta) {
                                 updateRecontagemEquipmentCount(f.id, { status: undefined });
@@ -768,7 +817,7 @@ export const RecontagemView: React.FC = () => {
                                 updateRecontagemEquipmentCount(f.id, { status: 'nao_consta', damageDescription: undefined });
                               }
                             }}
-                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                               isNaoConsta 
                                 ? 'bg-rose-600 text-white shadow-xs' 
                                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
@@ -825,6 +874,7 @@ export const RecontagemView: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
+                            disabled={!canActiveUserRecount}
                             onClick={() => {
                               if (isEmEstoque) {
                                 updateRecontagemEquipmentCount(eq.id, { status: undefined });
@@ -832,7 +882,7 @@ export const RecontagemView: React.FC = () => {
                                 updateRecontagemEquipmentCount(eq.id, { status: 'em_estoque', damageDescription: undefined });
                               }
                             }}
-                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                               isEmEstoque 
                                 ? 'bg-emerald-600 text-white shadow-xs' 
                                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
@@ -843,6 +893,7 @@ export const RecontagemView: React.FC = () => {
                           </button>
                           <button
                             type="button"
+                            disabled={!canActiveUserRecount}
                             onClick={() => {
                               if (isNaoConsta) {
                                 updateRecontagemEquipmentCount(eq.id, { status: undefined });
@@ -850,7 +901,7 @@ export const RecontagemView: React.FC = () => {
                                 updateRecontagemEquipmentCount(eq.id, { status: 'nao_consta', damageDescription: undefined });
                               }
                             }}
-                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                               isNaoConsta 
                                 ? 'bg-rose-600 text-white shadow-xs' 
                                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
@@ -868,12 +919,18 @@ export const RecontagemView: React.FC = () => {
             )}
 
             {/* SEÇÃO: BOTÃO ENVIAR E-MAIL DA RECONTAGEM */}
-            <div className="bg-white border border-slate-200 rounded-2xl p-3.5 shadow-xs">
+            <div className="bg-white border border-slate-200 rounded-2xl p-3.5 shadow-xs space-y-2">
+              {!isMaster && !recontagemUnlocked && (
+                <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 text-[11px] font-bold flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>Recontagem já enviada. As telas permanecem bloqueadas até o usuário Master zerar a contagem.</span>
+                </div>
+              )}
               <button
                 type="button"
-                disabled={isSendingRecountEmail}
+                disabled={isSendingRecountEmail || (!isMaster && !canActiveUserRecount)}
                 onClick={handleSendRecountEmail}
-                className="w-full py-3.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-3.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Send className="w-4 h-4 stroke-[3]" />
                 <span>{isSendingRecountEmail ? 'Sincronizando e abrindo e-mail...' : 'Enviar Relatório da Recontagem por E-mail'}</span>
@@ -918,6 +975,57 @@ export const RecontagemView: React.FC = () => {
     return renderContadorRecountView();
   }
 
+  // Verifica se há contagem recebida (tanto nas telas Materiais/Equipamentos como na tela Recontagem)
+  const hasCountReceived = useMemo(() => {
+    const hasInitial =
+      countedMaterials.length > 0 ||
+      countedEquipmentsList.length > 0 ||
+      uncataloguedEquipments.length > 0;
+    const hasRecMats = Object.values(recontagemMaterialCounts).some(m =>
+      (m.disponivel || 0) > 0 ||
+      (m.danificado || 0) > 0 ||
+      (m.barrilCheio || 0) > 0 ||
+      (m.barrilVazio || 0) > 0 ||
+      (m.barrilEmRota || 0) > 0 ||
+      (m.co2Cheio || 0) > 0 ||
+      (m.co2Mexido || 0) > 0 ||
+      (m.co2Vazio || 0) > 0 ||
+      (m.co2EmRota || 0) > 0
+    );
+    const hasRecEqs = Object.keys(recontagemEquipmentCounts).some(id => Boolean(recontagemEquipmentCounts[id]?.status));
+    return hasInitial || hasRecMats || hasRecEqs;
+  }, [countedMaterials.length, countedEquipmentsList.length, uncataloguedEquipments.length, recontagemMaterialCounts, recontagemEquipmentCounts]);
+
+  const selectedTargetContador = useMemo(() => {
+    return branchContadores.find(u => u.id === selectedTargetContadorId) || null;
+  }, [branchContadores, selectedTargetContadorId]);
+
+  const isMasterSelectionLocked = recontagemUnlocked || isAnyBaseCountInProgress;
+
+  // Sem contagem inicial recebida, exibe lista selecionável de contadores da base ao selecionar >= 1 item
+  const showTargetContadorSelector =
+    !isMasterSelectionLocked &&
+    recontagemSelectedCount > 0 &&
+    (!hasCountReceived || (!countStartedBy && !recontagemTargetContador));
+
+  // Campo com o botão "Liberar Recontagem para o Contador Inicial":
+  // Só aparece se houver contagem recebida (ou já estiver liberada) OU se Master selecionou item(ns) e escolheu um contador da base
+  const showReleasePanel =
+    recontagemUnlocked ||
+    hasCountReceived ||
+    (recontagemSelectedCount > 0 && Boolean(selectedTargetContador));
+
+  const effectiveReleaseContador =
+    (hasCountReceived ? (countStartedBy || recontagemTargetContador) : null) ||
+    (selectedTargetContador
+      ? {
+          userId: selectedTargetContador.id,
+          userName: selectedTargetContador.name,
+          registration: selectedTargetContador.registration,
+          startedAt: Date.now(),
+        }
+      : recontagemTargetContador || countStartedBy);
+
   return (
     <div className="space-y-4 pb-12 bg-white">
       {/* Header Master */}
@@ -928,7 +1036,7 @@ export const RecontagemView: React.FC = () => {
             <span>Recontagem de Itens</span>
           </h2>
           <p className="text-xs text-slate-500">
-            Selecione quais itens precisarão ser recontados pelo conferente
+            Selecione quais itens precisarão ser contados ou recontados pelo conferente
           </p>
         </div>
 
@@ -967,7 +1075,7 @@ export const RecontagemView: React.FC = () => {
         renderContadorRecountView()
       ) : (
         <>
-          {/* Card de Resumo da Seleção Atual e Liberação da Recontagem ao Contador Inicial */}
+          {/* Card de Resumo da Seleção Atual e Liberação da Recontagem */}
           <div className="bg-white border-2 border-slate-200 rounded-2xl p-3.5 space-y-3 shadow-xs">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
@@ -980,11 +1088,12 @@ export const RecontagemView: React.FC = () => {
                 </span>
               </div>
 
-              {recontagemSelectedCount > 0 && (
+              {recontagemSelectedCount > 0 && !isMasterSelectionLocked && (
                 <button
                   type="button"
                   onClick={() => {
                     clearAllRecontagem();
+                    setSelectedTargetContadorId('');
                     showToast(`Seleção de recontagem limpa para a base ${activeBranch}!`);
                   }}
                   className="text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline cursor-pointer"
@@ -994,101 +1103,127 @@ export const RecontagemView: React.FC = () => {
               )}
             </div>
 
-            {recontagemSelectedCount > 0 ? (
+            {isMasterSelectionLocked ? (
+              <div className="p-2.5 bg-amber-50 border-2 border-amber-300 rounded-xl text-xs text-amber-950 leading-relaxed font-bold flex items-center gap-2">
+                <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>
+                  Existe contagem/recontagem em andamento na base. Demais contadores e Master não podem alterar dados até o envio do relatório pelo contador selecionado.
+                </span>
+              </div>
+            ) : recontagemSelectedCount > 0 ? (
               <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-950 leading-relaxed font-bold">
-                {recontagemSelectedCount} item(ns) marcado(s) na base {activeBranch}. Clique em &quot;Liberar Recontagem para o Contador Inicial&quot; abaixo para enviar a seleção ao Firebase e liberar o acesso ao contador que iniciou a contagem.
+                {hasCountReceived
+                  ? `${recontagemSelectedCount} item(ns) marcado(s) na base ${activeBranch}. Clique em "Liberar Recontagem para o Contador Inicial" abaixo para enviar a seleção ao Firebase e liberar o acesso ao contador.`
+                  : `${recontagemSelectedCount} item(ns) selecionado(s) sem contagem inicial na base ${activeBranch}. Selecione o usuário contador abaixo para habilitar a liberação.`}
               </div>
             ) : (
               <p className="text-[11px] text-slate-500">
-                Marque os itens abaixo (contados ou não contados inicialmente) e clique no botão de liberação para permitir que o contador inicial acesse o app novamente.
+                {hasCountReceived
+                  ? 'Marque os itens abaixo (contados ou não contados inicialmente) e clique no botão de liberação para permitir que o contador inicial acesse o app novamente.'
+                  : 'Não há contagem inicial recebida no momento. Caso precise contar item(ns) específico(s), selecione os itens abaixo na seção "Demais Materiais/Equipamentos Não Contados Inicialmente" e escolha o contador da base.'}
               </p>
             )}
 
-            {/* Painel de Liberação para o Contador Inicial */}
-            <div className={`p-3 rounded-2xl border-2 space-y-2.5 ${
-              recontagemUnlocked
-                ? 'bg-emerald-50/70 border-emerald-400'
-                : 'bg-slate-50 border-slate-200'
-            }`}>
-              <div className="flex items-center justify-between flex-wrap gap-2">
+            {/* Lista Selecionável de Contadores da Base Ativa (quando não há contagem iniciada / contador inicial definido) */}
+            {showTargetContadorSelector && (
+              <div className="p-3 bg-indigo-50/70 border-2 border-indigo-200 rounded-2xl space-y-2">
                 <div className="flex items-center gap-2">
-                  <UserCheck className={`w-4 h-4 ${recontagemUnlocked ? 'text-emerald-700' : 'text-slate-600'}`} />
-                  <div className="text-[11px]">
-                    <span className="font-bold text-slate-700 block">
-                      Contador inicial da base {activeBranch}:{' '}
-                      <strong className="text-slate-900">
-                        {countStartedBy
-                          ? `${countStartedBy.userName} (Matrícula: ${countStartedBy.registration})`
-                          : 'Nenhum registro inicial hoje'}
-                      </strong>
+                  <Users className="w-4 h-4 text-indigo-700 shrink-0" />
+                  <div>
+                    <span className="text-xs font-black text-indigo-950 block">
+                      Selecionar Contador da Base {activeBranch}:
+                    </span>
+                    <span className="text-[10px] text-indigo-800 font-medium">
+                      Escolha qual usuário contador realizará a contagem dos item(ns) selecionado(s).
                     </span>
                   </div>
                 </div>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
-                  recontagemUnlocked
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-slate-200 text-slate-700'
-                }`}>
-                  {recontagemUnlocked ? 'Recontagem Liberada' : 'Bloqueada'}
-                </span>
-              </div>
 
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  disabled={isReleasingRecount || recontagemSelectedCount === 0}
-                  onClick={async () => {
-                    if (isReleasingRecount) return;
-                    setIsReleasingRecount(true);
-                    try {
-                      const res = await releaseRecontagemForContador();
-                      showToast(res.message);
-                    } finally {
-                      setIsReleasingRecount(false);
-                    }
-                  }}
-                  className={`flex-1 py-2.5 px-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-[0.99] disabled:opacity-50 ${
-                    recontagemUnlocked
-                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                      : 'bg-rose-600 hover:bg-rose-500 text-white'
-                  }`}
-                >
-                  {isReleasingRecount ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Unlock className="w-4 h-4" />
-                  )}
-                  <span>
-                    {isReleasingRecount
-                      ? 'Liberando e sincronizando...'
-                      : recontagemUnlocked
-                        ? 'Atualizar Liberação da Recontagem'
-                        : 'Liberar Recontagem para o Contador Inicial'}
-                  </span>
-                </button>
-
-                {recontagemUnlocked && (
-                  <button
-                    type="button"
-                    disabled={isReleasingRecount}
-                    onClick={async () => {
-                      if (isReleasingRecount) return;
-                      setIsReleasingRecount(true);
-                      try {
-                        const res = await revokeRecontagemForContador();
-                        showToast(res.message);
-                      } finally {
-                        setIsReleasingRecount(false);
-                      }
-                    }}
-                    className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-all"
+                {branchContadores.length === 0 ? (
+                  <div className="p-2.5 bg-white border border-indigo-200 rounded-xl text-[11px] font-bold text-rose-700">
+                    Nenhum usuário contador ativo cadastrado na base {activeBranch}.
+                  </div>
+                ) : (
+                  <select
+                    value={selectedTargetContadorId}
+                    onChange={e => setSelectedTargetContadorId(e.target.value)}
+                    className="w-full bg-white border-2 border-indigo-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none focus:border-indigo-500 cursor-pointer"
                   >
-                    <Lock className="w-3.5 h-3.5" />
-                    <span>Bloquear</span>
-                  </button>
+                    <option value="">-- Selecione o usuário contador da base {activeBranch} --</option>
+                    {branchContadores.map(u => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} (Matrícula: {u.registration})
+                      </option>
+                    ))}
+                  </select>
                 )}
               </div>
-            </div>
+            )}
+
+            {/* Painel de Liberação para o Contador Inicial / Selecionado (oculto quando não há contagem recebida nem seleção + contador) */}
+            {showReleasePanel && (
+              <div className={`p-3 rounded-2xl border-2 space-y-2.5 ${
+                recontagemUnlocked
+                  ? 'bg-emerald-50/70 border-emerald-400'
+                  : 'bg-slate-50 border-slate-200'
+              }`}>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <UserCheck className={`w-4 h-4 ${recontagemUnlocked ? 'text-emerald-700' : 'text-slate-600'}`} />
+                    <div className="text-[11px]">
+                      <span className="font-bold text-slate-700 block">
+                        Contador autorizado na base {activeBranch}:{' '}
+                        <strong className="text-slate-900">
+                          {effectiveReleaseContador
+                            ? `${effectiveReleaseContador.userName} (Matrícula: ${effectiveReleaseContador.registration})`
+                            : 'Selecione um contador'}
+                        </strong>
+                      </span>
+                    </div>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                    recontagemUnlocked
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-200 text-slate-700'
+                  }`}>
+                    {recontagemUnlocked ? 'Recontagem Liberada' : 'Pronto para Liberar'}
+                  </span>
+                </div>
+
+                {!recontagemUnlocked && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={isReleasingRecount || recontagemSelectedCount === 0 || isMasterSelectionLocked || !effectiveReleaseContador}
+                      onClick={async () => {
+                        if (isReleasingRecount) return;
+                        setIsReleasingRecount(true);
+                        try {
+                          const res = await releaseRecontagemForContador(
+                            hasCountReceived && countStartedBy ? undefined : selectedTargetContador
+                          );
+                          showToast(res.message);
+                        } finally {
+                          setIsReleasingRecount(false);
+                        }
+                      }}
+                      className="flex-1 py-2.5 px-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-[0.99] disabled:opacity-50 bg-rose-600 hover:bg-rose-500 text-white"
+                    >
+                      {isReleasingRecount ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Unlock className="w-4 h-4" />
+                      )}
+                      <span>
+                        {isReleasingRecount
+                          ? 'Liberando e sincronizando...'
+                          : 'Liberar Recontagem para o Contador Inicial'}
+                      </span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* DOIS FILTROS PRINCIPAIS: MATERIAIS E EQUIPAMENTOS */}
@@ -1135,8 +1270,9 @@ export const RecontagemView: React.FC = () => {
 
             <button
               type="button"
+              disabled={isMasterSelectionLocked}
               onClick={() => selectAllRecontagem(masterFilter)}
-              className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl cursor-pointer shrink-0"
+              className="px-3 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 font-bold text-[11px] rounded-xl cursor-pointer shrink-0"
               title="Marcar todos os itens contados desta categoria"
             >
               Marcar Todos
@@ -1166,8 +1302,10 @@ export const RecontagemView: React.FC = () => {
                   return (
                     <div
                       key={m.id}
-                      onClick={() => toggleRecontagemItem(m.id)}
-                      className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+                      onClick={() => { if (!isMasterSelectionLocked) toggleRecontagemItem(m.id); }}
+                      className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 select-none ${
+                        isMasterSelectionLocked ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
+                      } ${
                         isSelected
                           ? 'bg-rose-50/70 border-rose-400 shadow-xs'
                           : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
@@ -1193,11 +1331,12 @@ export const RecontagemView: React.FC = () => {
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
+                          disabled={isMasterSelectionLocked}
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleRecontagemItem(m.id);
                           }}
-                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
+                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-60 ${
                             isSelected
                               ? 'bg-rose-600 text-white shadow-xs scale-105'
                               : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'
@@ -1245,8 +1384,10 @@ export const RecontagemView: React.FC = () => {
                   return (
                     <div
                       key={item.id}
-                      onClick={() => toggleRecontagemItem(item.id)}
-                      className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+                      onClick={() => { if (!isMasterSelectionLocked) toggleRecontagemItem(item.id); }}
+                      className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 select-none ${
+                        isMasterSelectionLocked ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
+                      } ${
                         isSelected
                           ? 'bg-rose-50/70 border-rose-400 shadow-xs'
                           : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
@@ -1278,11 +1419,12 @@ export const RecontagemView: React.FC = () => {
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
+                          disabled={isMasterSelectionLocked}
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleRecontagemItem(item.id);
                           }}
-                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
+                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-60 ${
                             isSelected
                               ? 'bg-rose-600 text-white shadow-xs scale-105'
                               : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'
@@ -1356,8 +1498,10 @@ export const RecontagemView: React.FC = () => {
                     return (
                       <div
                         key={m.id}
-                        onClick={() => toggleRecontagemItem(m.id)}
-                        className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+                        onClick={() => { if (!isMasterSelectionLocked) toggleRecontagemItem(m.id); }}
+                        className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 select-none ${
+                          isMasterSelectionLocked ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
+                        } ${
                           isSelected
                             ? 'bg-rose-50/70 border-rose-400 shadow-xs'
                             : 'bg-white border-slate-200 hover:border-purple-300 hover:bg-purple-50/30'
@@ -1384,11 +1528,12 @@ export const RecontagemView: React.FC = () => {
 
                         <button
                           type="button"
+                          disabled={isMasterSelectionLocked}
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleRecontagemItem(m.id);
                           }}
-                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0 disabled:opacity-60 ${
                             isSelected
                               ? 'bg-rose-600 text-white shadow-xs scale-105'
                               : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'
@@ -1428,8 +1573,10 @@ export const RecontagemView: React.FC = () => {
                     return (
                       <div
                         key={item.id}
-                        onClick={() => toggleRecontagemItem(item.id)}
-                        className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+                        onClick={() => { if (!isMasterSelectionLocked) toggleRecontagemItem(item.id); }}
+                        className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 select-none ${
+                          isMasterSelectionLocked ? 'opacity-75 cursor-not-allowed' : 'cursor-pointer'
+                        } ${
                           isSelected
                             ? 'bg-rose-50/70 border-rose-400 shadow-xs'
                             : 'bg-white border-slate-200 hover:border-purple-300 hover:bg-purple-50/30'
@@ -1457,11 +1604,12 @@ export const RecontagemView: React.FC = () => {
 
                         <button
                           type="button"
+                          disabled={isMasterSelectionLocked}
                           onClick={(e) => {
                             e.stopPropagation();
                             toggleRecontagemItem(item.id);
                           }}
-                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0 disabled:opacity-60 ${
                             isSelected
                               ? 'bg-rose-600 text-white shadow-xs scale-105'
                               : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'

@@ -631,8 +631,13 @@ export const MateriaisView: React.FC = () => {
   const [isCloneModalOpen, setIsCloneModalOpen] = useState(false);
 
   const handleResetButtonClick = () => {
+    if (isAnyBaseCountInProgress) {
+      setCloneToast('⚠️ Existe contagem em andamento.');
+      setTimeout(() => setCloneToast(null), 3500);
+      return;
+    }
     // EXIGÊNCIA 2: ao precionar o botão "Zerar Contagens" e a contagem já tiver sido zerada, informar "Contagem já zerada"
-    if (isCountAlreadyZero()) {
+    if (isCountAlreadyZero('materiais')) {
       setAlreadyZeroOpen(true);
       return;
     }
@@ -640,9 +645,9 @@ export const MateriaisView: React.FC = () => {
   };
 
   const handleResetAllToday = () => {
-    resetAllTodayCountsByMaster();
+    resetAllTodayCountsByMaster('materiais');
     setConfirmResetOpen(false);
-    setCloneToast('🗑️ Base da contagem de hoje foi zerada para todos os usuários!');
+    setCloneToast('🗑️ Contagem de materiais de hoje foi zerada!');
     setTimeout(() => setCloneToast(null), 3500);
   };
 
@@ -732,7 +737,14 @@ export const MateriaisView: React.FC = () => {
           {/* Botão Clonar Última (Apenas Usuário Master) */}
           {isMaster && (
             <button
-              onClick={() => setIsCloneModalOpen(true)}
+              onClick={() => {
+                if (isAnyBaseCountInProgress) {
+                  setCloneToast('⚠️ Existe contagem em andamento.');
+                  setTimeout(() => setCloneToast(null), 3500);
+                  return;
+                }
+                setIsCloneModalOpen(true);
+              }}
               className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs rounded-xl flex items-center gap-1 shadow-xs active:scale-95 transition-all cursor-pointer"
               title="Clonar última contagem por grupo ou estoque (Exclusivo Master)"
             >
@@ -741,12 +753,12 @@ export const MateriaisView: React.FC = () => {
             </button>
           )}
 
-          {/* Botão Zerar Contagens (Apenas Usuário Master) */}
+          {/* Botão Zerar Contagens (Apenas Usuário Master - zera somente Materiais) */}
           {isMaster && (
             <button
               onClick={handleResetButtonClick}
               className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 font-bold text-xs rounded-xl flex items-center gap-1 shadow-xs active:scale-95 transition-all cursor-pointer"
-              title="Zerar base de contagem para todos os usuários"
+              title="Zerar apenas a contagem de materiais de hoje"
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-600" />
               <span>Zerar Contagens</span>
@@ -784,10 +796,10 @@ export const MateriaisView: React.FC = () => {
         <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs space-y-2 animate-in fade-in duration-150 shadow-sm">
           <div className="flex items-center gap-2 font-bold text-rose-900">
             <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-            <span>Zerar contagem de materiais e equipamentos de hoje?</span>
+            <span>Zerar contagem de materiais de hoje?</span>
           </div>
           <p className="text-slate-600 text-[11px]">
-            Esta ação zerará a contagem para <strong>todos os usuários</strong>. A última contagem fica salva no backup para clonagem.
+            Esta ação zerará <strong>apenas a contagem de Materiais</strong> da base atual. A última contagem fica salva no backup para clonagem.
           </p>
           <div className="flex gap-2 pt-1">
             <button
@@ -800,7 +812,7 @@ export const MateriaisView: React.FC = () => {
               onClick={handleResetAllToday}
               className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer"
             >
-              Sim, Zerar Toda a Contagem
+              Sim, Zerar Materiais
             </button>
           </div>
         </div>

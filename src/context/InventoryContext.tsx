@@ -50,7 +50,7 @@ interface InventoryContextType {
   // Gestão de Base por Unidade (PAULO AFONSO e DELMIRO)
   activeBranch: UnitBranch;
   setActiveBranch: (branch: UnitBranch) => void;
-  isCountAlreadyZero: () => boolean;
+  isCountAlreadyZero: (scope?: 'materiais' | 'equipamentos' | 'ambos') => boolean;
 
   // Permissões e Controle de Concorrência
   isMaster: boolean;
@@ -60,14 +60,17 @@ interface InventoryContextType {
 
   // Estado e Regras de Contagem Concorrente
   countStartedBy: CountStartedBy | null;
+  recontagemTargetContador: CountStartedBy | null;
   isReportSent: boolean;
   recontagemUnlocked: boolean;
   isCountInProgress: boolean;
   isAnyBaseCountInProgress: boolean;
   canActiveUserCount: boolean;
+  canActiveUserRecount: boolean;
+  isRecontagemTabsBlockedForContador: boolean;
   cantCountReason: string | null;
   markCountAsSent: (branch?: UnitBranch) => Promise<{ synced: boolean; message?: string }>;
-  releaseRecontagemForContador: () => Promise<{ success: boolean; message: string }>;
+  releaseRecontagemForContador: (targetContador?: StockUser | null) => Promise<{ success: boolean; message: string }>;
   revokeRecontagemForContador: () => Promise<{ success: boolean; message: string }>;
   markRecountAsSent: () => Promise<{ synced: boolean; message?: string }>;
 
@@ -99,7 +102,7 @@ interface InventoryContextType {
   cloneLastMaterialCount: () => boolean;
   cloneLastEquipmentCount: () => boolean;
   cloneSelectiveCount: (target: CloneGroupTarget) => { success: boolean; message: string };
-  resetAllTodayCountsByMaster: () => void;
+  resetAllTodayCountsByMaster: (scope?: 'materiais' | 'equipamentos' | 'ambos') => void;
 
   // Autenticação / Login
   login: (registration: string, password: string, branchChoice?: UnitBranch) => Promise<{ success: boolean; message?: string }>;
@@ -374,18 +377,31 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return loadInitialBranchData<boolean>(activeBranch, 'is_report_sent', false, []);
   });
 
-  // Indicador de recontagem liberada pelo Master para o contador inicial
+  // Indicador de recontagem liberada pelo Master para o contador inicial ou selecionado
   const [recontagemUnlocked, setRecontagemUnlocked] = useState<boolean>(() => {
     return loadInitialBranchData<boolean>(activeBranch, 'recontagem_unlocked', false, []);
+  });
+
+  // Contador específico selecionado pelo Master (quando há contagem específica sem contagem inicial)
+  const [recontagemTargetContador, setRecontagemTargetContador] = useState<CountStartedBy | null>(() => {
+    return loadInitialBranchData<CountStartedBy | null>(activeBranch, 'recontagem_target_contador', null, []);
   });
 
   const readBranchInitialStatus = (b: UnitBranch) => {
     try {
       const storedDay = localStorage.getItem(getBranchStorageKey(b, 'calendar_day'));
       if (storedDay && storedDay !== getTodayKey()) {
-        return { countStartedBy: null, isReportSent: false, recontagemUnlocked: false, activeContadorSession: null, hasCounts: false };
+        return {
+          countStartedBy: null,
+          recontagemTargetContador: null,
+          isReportSent: false,
+          recontagemUnlocked: false,
+          activeContadorSession: null,
+          hasCounts: false,
+        };
       }
       const csbRaw = localStorage.getItem(getBranchStorageKey(b, 'count_started_by'));
+      const recTargetRaw = localStorage.getItem(getBranchStorageKey(b, 'recontagem_target_contador'));
       const irsRaw = localStorage.getItem(getBranchStorageKey(b, 'is_report_sent'));
       const recUnlockedRaw = localStorage.getItem(getBranchStorageKey(b, 'recontagem_unlocked'));
       const sessRaw = localStorage.getItem(getBranchStorageKey(b, 'active_contador_session'));
@@ -394,6 +410,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const uncatRaw = localStorage.getItem(getBranchStorageKey(b, 'today_uncatalogued'));
 
       const parsedCsb: CountStartedBy | null = csbRaw ? JSON.parse(csbRaw) : null;
+      const parsedRecTarget: CountStartedBy | null = recTargetRaw ? JSON.parse(recTargetRaw) : null;
       const parsedIrs: boolean = irsRaw ? JSON.parse(irsRaw) : false;
       const parsedRecUnlocked: boolean = recUnlockedRaw ? JSON.parse(recUnlockedRaw) : false;
       const parsedMats: Record<string, MaterialDailyEntry> = matsRaw ? JSON.parse(matsRaw) : {};
@@ -405,23 +422,33 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         Object.keys(parsedEqs).length > 0 ||
         parsedUncat.length > 0;
 
-      // Só mantém sessão ativa se houver contagem iniciada (ao menos 1 item inserido) e relatório ainda não enviado
+      // Mantém sessão ativa se houver contagem iniciada não enviada OU recontagem liberada ativa
       const parsedSess: ContadorSession | null =
-        !parsedIrs && (Boolean(parsedCsb) || hasCounts) && sessRaw ? JSON.parse(sessRaw) : null;
+        ((!parsedIrs && (Boolean(parsedCsb) || hasCounts)) || parsedRecUnlocked) && sessRaw
+          ? JSON.parse(sessRaw)
+          : null;
 
       return {
         countStartedBy: parsedCsb,
+        recontagemTargetContador: parsedRecTarget,
         isReportSent: parsedIrs,
         recontagemUnlocked: parsedRecUnlocked,
         activeContadorSession: parsedSess,
         hasCounts,
       };
     } catch {
-      return { countStartedBy: null, isReportSent: false, recontagemUnlocked: false, activeContadorSession: null, hasCounts: false };
+      return {
+        countStartedBy: null,
+        recontagemTargetContador: null,
+        isReportSent: false,
+        recontagemUnlocked: false,
+        activeContadorSession: null,
+        hasCounts: false,
+      };
     }
   };
 
-  // Sessão de Contador isolada por base (apenas quando há contagem iniciada)
+  // Sessão de Contador isolada por base (apenas quando há contagem iniciada ou recontagem em andamento)
   const [activeContadorSession, setActiveContadorSession] = useState<ContadorSession | null>(() => {
     return readBranchInitialStatus(activeBranch).activeContadorSession;
   });
@@ -429,6 +456,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Estado das duas bases para controle de concorrência global (nas duas bases)
   const [branchStatusPA, setBranchStatusPA] = useState<{
     countStartedBy: CountStartedBy | null;
+    recontagemTargetContador: CountStartedBy | null;
     isReportSent: boolean;
     recontagemUnlocked: boolean;
     activeContadorSession: ContadorSession | null;
@@ -437,6 +465,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [branchStatusDEL, setBranchStatusDEL] = useState<{
     countStartedBy: CountStartedBy | null;
+    recontagemTargetContador: CountStartedBy | null;
     isReportSent: boolean;
     recontagemUnlocked: boolean;
     activeContadorSession: ContadorSession | null;
@@ -618,6 +647,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_material_counts'), JSON.stringify({}));
       localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_equipment_counts'), JSON.stringify({}));
       localStorage.removeItem(getBranchStorageKey(newBranch, 'count_started_by'));
+      localStorage.removeItem(getBranchStorageKey(newBranch, 'recontagem_target_contador'));
       localStorage.removeItem(getBranchStorageKey(newBranch, 'active_contador_session'));
       localStorage.setItem(getBranchStorageKey(newBranch, 'is_report_sent'), JSON.stringify(false));
       localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_unlocked'), JSON.stringify(false));
@@ -625,6 +655,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     const cStarted = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(newBranch, 'count_started_by', null, []);
+    const recTarget = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(newBranch, 'recontagem_target_contador', null, []);
     const repSent = isNewDay ? false : loadInitialBranchData<boolean>(newBranch, 'is_report_sent', false, []);
     const recUnlocked = isNewDay ? false : loadInitialBranchData<boolean>(newBranch, 'recontagem_unlocked', false, []);
     const hasBranchCounts = !isNewDay && (
@@ -632,7 +663,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       Object.keys(eqCounts || {}).length > 0 ||
       (Array.isArray(uncat) && uncat.length > 0)
     );
-    const validSess = !isNewDay && !repSent && (Boolean(cStarted) || hasBranchCounts) ? sess : null;
+    const validSess = !isNewDay && ((!repSent && (Boolean(cStarted) || hasBranchCounts)) || recUnlocked) ? sess : null;
 
     setMaterials(mats);
     setFreezers(frzs);
@@ -646,6 +677,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setFrozenReportTextState(frzRep);
     setActiveContadorSession(validSess);
     setCountStartedBy(cStarted);
+    setRecontagemTargetContador(recTarget);
     setIsReportSent(repSent);
     setRecontagemUnlocked(recUnlocked);
     setEmailSettings(branchEmailSettings);
@@ -669,22 +701,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [activeUser, activeBranch]);
 
-  // EXIGÊNCIA: Verificar se a contagem já se encontra zerada
-  const isCountAlreadyZero = (): boolean => {
-    const hasMats = Object.values(materialCounts).some(m =>
-      (m.disponivel || 0) > 0 ||
-      (m.danificado || 0) > 0 ||
-      (m.barrilCheio || 0) > 0 ||
-      (m.barrilVazio || 0) > 0 ||
-      (m.barrilEmRota || 0) > 0 ||
-      (m.co2Cheio || 0) > 0 ||
-      (m.co2Mexido || 0) > 0 ||
-      (m.co2Vazio || 0) > 0 ||
-      (m.co2EmRota || 0) > 0
-    );
+  // EXIGÊNCIA: Verificar se a contagem já se encontra zerada (por tela ou globalmente)
+  const isCountAlreadyZero = (scope: 'materiais' | 'equipamentos' | 'ambos' = 'ambos'): boolean => {
+    const hasMats = Object.values(materialCounts).some(hasMaterialEntryQuantity);
+    const hasRecMats = Object.values(recontagemMaterialCounts).some(hasMaterialEntryQuantity);
+    const hasSelectedMats = materials.some(m => Boolean(recontagemSelectedIds[m.id]));
+
     const hasEqs = Object.keys(equipmentCounts).length > 0;
     const hasUncat = uncataloguedEquipments.length > 0;
-    return !hasMats && !hasEqs && !hasUncat && !countStartedBy;
+    const hasRecEqs = Object.keys(recontagemEquipmentCounts).some(id => Boolean(recontagemEquipmentCounts[id]?.status));
+    const hasSelectedEqs =
+      freezers.some(f => Boolean(recontagemSelectedIds[f.id])) ||
+      equipments.some(e => Boolean(recontagemSelectedIds[e.id]));
+
+    if (scope === 'materiais') {
+      return !hasMats && !hasRecMats && !hasSelectedMats;
+    }
+    if (scope === 'equipamentos') {
+      return !hasEqs && !hasUncat && !hasRecEqs && !hasSelectedEqs;
+    }
+    return !hasMats && !hasEqs && !hasUncat && !hasRecMats && !hasRecEqs && !hasSelectedMats && !hasSelectedEqs && !countStartedBy && !recontagemTargetContador;
   };
 
   // Verificação diária por base (limpeza ao virar o dia em ambas as bases, incluindo recontagem)
@@ -734,6 +770,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           localStorage.setItem(getBranchStorageKey(b, 'recontagem_material_counts'), JSON.stringify({}));
           localStorage.setItem(getBranchStorageKey(b, 'recontagem_equipment_counts'), JSON.stringify({}));
           localStorage.removeItem(getBranchStorageKey(b, 'count_started_by'));
+          localStorage.removeItem(getBranchStorageKey(b, 'recontagem_target_contador'));
           localStorage.removeItem(getBranchStorageKey(b, 'active_contador_session'));
           localStorage.setItem(getBranchStorageKey(b, 'is_report_sent'), JSON.stringify(false));
           localStorage.setItem(getBranchStorageKey(b, 'recontagem_unlocked'), JSON.stringify(false));
@@ -742,6 +779,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
           const clearedStatus = {
             countStartedBy: null,
+            recontagemTargetContador: null,
             isReportSent: false,
             recontagemUnlocked: false,
             activeContadorSession: null,
@@ -762,6 +800,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             setRecontagemMaterialCounts({});
             setRecontagemEquipmentCounts({});
             setCountStartedBy(null);
+            setRecontagemTargetContador(null);
             setActiveContadorSession(null);
             setIsReportSent(false);
             setRecontagemUnlocked(false);
@@ -892,6 +931,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_unlocked'), JSON.stringify(recontagemUnlocked));
   }, [recontagemUnlocked, activeBranch]);
 
+  useEffect(() => {
+    if (isSwitchingBranchRef.current) return;
+    if (recontagemTargetContador) {
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_target_contador'), JSON.stringify(recontagemTargetContador));
+    } else {
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'recontagem_target_contador'));
+    }
+  }, [recontagemTargetContador, activeBranch]);
+
   // --- CONTROLE DE SINCRONIZAÇÃO COM O FIREBASE FIRESTORE ---
   // EXIGÊNCIA: A comunicação com o Firebase só ocorre:
   // 1. Automaticamente ao logar no app (atualizando dados das respectivas bases) e carga inicial no boot;
@@ -964,6 +1012,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const effEquipments = Array.isArray(remote.equipments) ? remote.equipments : undefined;
 
     const effCountStartedBy = isPreviousDay ? null : (remote.countStartedBy || null);
+    const effRecTargetContador = isPreviousDay ? null : (remote.recontagemTargetContador || null);
     const effIsReportSent = isPreviousDay ? false : !!remote.isReportSent;
     const effRecUnlocked = isPreviousDay ? false : !!remote.recontagemUnlocked;
     const effMatCounts = isPreviousDay ? {} : (remote.materialCounts || {});
@@ -996,13 +1045,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       Object.keys(effEqCounts).length > 0 ||
       effUncat.length > 0;
 
-    // A sessão só permanece ativa se houver contagem efetivamente iniciada e relatório ainda não enviado
-    const effSession = (isPreviousDay || effIsReportSent || (!effCountStartedBy && !hasCounts))
+    // A sessão só permanece ativa se houver contagem efetivamente iniciada não enviada OU recontagem liberada ativa
+    const effSession = (isPreviousDay || (!effRecUnlocked && (effIsReportSent || (!effCountStartedBy && !hasCounts))))
       ? null
       : (remote.activeContadorSession || null);
 
     const statusObj = {
       countStartedBy: effCountStartedBy,
+      recontagemTargetContador: effRecTargetContador,
       isReportSent: effIsReportSent,
       recontagemUnlocked: effRecUnlocked,
       activeContadorSession: effSession,
@@ -1064,6 +1114,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       } else {
         localStorage.removeItem(getBranchStorageKey(branch, 'count_started_by'));
       }
+      if (effRecTargetContador) {
+        localStorage.setItem(getBranchStorageKey(branch, 'recontagem_target_contador'), JSON.stringify(effRecTargetContador));
+      } else {
+        localStorage.removeItem(getBranchStorageKey(branch, 'recontagem_target_contador'));
+      }
       if (effFrozen) {
         localStorage.setItem(getBranchStorageKey(branch, 'frozen_report'), effFrozen);
       } else {
@@ -1090,6 +1145,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setRecontagemEquipmentCounts(effRecEq);
         setActiveContadorSession(effSession);
         setCountStartedBy(effCountStartedBy);
+        setRecontagemTargetContador(effRecTargetContador);
         setIsReportSent(effIsReportSent);
         setRecontagemUnlocked(effRecUnlocked);
         setFrozenReportTextState(effFrozen);
@@ -1152,37 +1208,38 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return hasMats || hasEqs || hasUncat;
   }, [materialCounts, equipmentCounts, uncataloguedEquipments]);
 
-  // Contagem em andamento na base PAULO AFONSO (somente quando há ao menos 1 quantidade/item inserido pelo contador)
+  // Contagem ou recontagem em andamento na base PAULO AFONSO
   const isCountInProgressPA = useMemo(() => {
+    if (branchStatusPA.recontagemUnlocked) return true;
     if (branchStatusPA.isReportSent) return false;
     return branchStatusPA.hasCounts && (!!branchStatusPA.countStartedBy || !!branchStatusPA.activeContadorSession);
   }, [branchStatusPA]);
 
-  // Contagem em andamento na base DELMIRO (somente quando há ao menos 1 quantidade/item inserido pelo contador)
+  // Contagem ou recontagem em andamento na base DELMIRO
   const isCountInProgressDEL = useMemo(() => {
+    if (branchStatusDEL.recontagemUnlocked) return true;
     if (branchStatusDEL.isReportSent) return false;
     return branchStatusDEL.hasCounts && (!!branchStatusDEL.countStartedBy || !!branchStatusDEL.activeContadorSession);
   }, [branchStatusDEL]);
 
-  // Contagem em andamento na base ativa
+  // Contagem ou recontagem em andamento na base ativa
   const isCountInProgress = activeBranch === 'PAULO AFONSO' ? isCountInProgressPA : isCountInProgressDEL;
 
-  // "quando algum contador iniciar a contagem no app, o usuário master poderá logar no app, mas não poderá realizar nenhuma mudança no cadastro de Materiais, Equipamentos e Usuários, também não poderá realizar mudança na contagem já iniciada, aparecendo a mensagem: 'Existe contagem em andamento.', nas duas bases."
+  // Bloqueio global nas duas bases durante contagem iniciada ou recontagem liberada em andamento
   const isAnyBaseCountInProgress = isCountInProgressPA || isCountInProgressDEL;
 
-  // Permissão do usuário ativo para realizar contagens na base atual
+  // Permissão do usuário ativo para realizar contagens normais (Materiais / Equipamentos) na base atual
   const canActiveUserCount = useMemo(() => {
     if (!activeUser) return false;
 
-    // Master: se houver contagem em andamento, Master não pode realizar alteração na contagem
+    // Master: se houver contagem ou recontagem em andamento, Master não pode realizar alteração na contagem
     if (activeUser.roleLevel === 'master') {
       if (isCountInProgress) return false;
       return true;
     }
 
-    // Usuário Contador:
-    // "Somente após o envio do estoque por e-mail é que o acesso total das funcionalidades do app será liberado para o usuário Master, os demais usuário contadores poderão logar no app, mas não poderão alterar a contagem em andamento e nem realizar contagens, nas duas bases."
-    if (isReportSent) {
+    // Usuário Contador: se houver recontagem para ele, telas Materiais, Equipamentos e Exportar ficam bloqueadas até o Master zerar a contagem
+    if (recontagemUnlocked || isReportSent || Boolean(recontagemTargetContador)) {
       return false;
     }
 
@@ -1192,7 +1249,27 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     return true;
-  }, [activeUser, isCountInProgress, isReportSent, countStartedBy]);
+  }, [activeUser, isCountInProgress, recontagemUnlocked, isReportSent, recontagemTargetContador, countStartedBy]);
+
+  // Bloqueio específico para edição na tela Recontagem
+  const canActiveUserRecount = useMemo(() => {
+    if (!activeUser) return false;
+    if (activeUser.roleLevel === 'master') {
+      // Master só pode visualizar/pré-editar fora de contagem/recontagem em andamento
+      return !isAnyBaseCountInProgress && !recontagemUnlocked;
+    }
+    if (!recontagemUnlocked) return false;
+    const authorized = recontagemTargetContador || countStartedBy;
+    if (authorized) {
+      const matchesId = authorized.userId === activeUser.id;
+      const matchesReg = Boolean(
+        authorized.registration &&
+        authorized.registration.toUpperCase() === activeUser.registration.toUpperCase()
+      );
+      if (!matchesId && !matchesReg) return false;
+    }
+    return true;
+  }, [activeUser, isAnyBaseCountInProgress, recontagemUnlocked, recontagemTargetContador, countStartedBy]);
 
   const cantCountReason = useMemo(() => {
     if (canActiveUserCount) return null;
@@ -1200,14 +1277,20 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (activeUser.roleLevel === 'master' && isCountInProgress) {
       return 'Existe contagem em andamento.';
     }
+    if (recontagemUnlocked) {
+      return 'Recontagem em andamento. Realize a contagem dos itens na tela Recontagem.';
+    }
     if (isReportSent) {
       return 'Estoque já enviado por e-mail. Não é permitido alterar a contagem em andamento nem realizar contagens até que a contagem seja zerada pelo usuário Master.';
+    }
+    if (recontagemTargetContador && recontagemTargetContador.userId !== activeUser.id) {
+      return `Recontagem direcionada ao contador ${recontagemTargetContador.userName} (Matrícula: ${recontagemTargetContador.registration}).`;
     }
     if (countStartedBy && countStartedBy.userId !== activeUser.id) {
       return `A contagem foi iniciada pelo contador ${countStartedBy.userName} (Matrícula: ${countStartedBy.registration}). Somente ele pode dar continuidade ou modificar a contagem iniciada.`;
     }
     return 'Existe contagem em andamento.';
-  }, [canActiveUserCount, activeUser, isCountInProgress, isReportSent, countStartedBy]);
+  }, [canActiveUserCount, activeUser, isCountInProgress, recontagemUnlocked, isReportSent, recontagemTargetContador, countStartedBy]);
 
 
   // Transmissão de sincronização em segundo plano
@@ -1241,6 +1324,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const statusCur = readBranchInitialStatus(curBranch);
       setActiveContadorSession(statusCur.activeContadorSession);
       setCountStartedBy(statusCur.countStartedBy);
+      setRecontagemTargetContador(statusCur.recontagemTargetContador);
       setIsReportSent(statusCur.isReportSent);
       setRecontagemUnlocked(statusCur.recontagemUnlocked);
       setBranchStatusPA(readBranchInitialStatus('PAULO AFONSO'));
@@ -1356,6 +1440,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const updateBranchStatus = (prev: {
       countStartedBy: CountStartedBy | null;
+      recontagemTargetContador: CountStartedBy | null;
       isReportSent: boolean;
       recontagemUnlocked: boolean;
       activeContadorSession: ContadorSession | null;
@@ -1380,7 +1465,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Se todas as quantidades/itens forem zerados ou removidos antes do envio do e-mail, desfaz o bloqueio de contagem iniciada
   const clearCountStartedIfEmpty = () => {
-    if (isReportSent) return;
+    if (isReportSent || recontagemUnlocked) return;
     const hadLock = Boolean(countStartedBy) || Boolean(activeContadorSession);
     if (countStartedBy) {
       setCountStartedBy(null);
@@ -1392,6 +1477,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
     const emptyStatus = {
       countStartedBy: null,
+      recontagemTargetContador: recontagemTargetContador,
       isReportSent: false,
       recontagemUnlocked: false,
       activeContadorSession: null,
@@ -1684,7 +1770,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // --- CLONAR ÚLTIMA CONTAGEM (APENAS USUÁRIO MASTER) ---
   const cloneLastMaterialCount = (): boolean => {
-    if (isMaster && isContadorActive) return false;
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) return false;
 
     if (!lastCountBackup || !lastCountBackup.materials || Object.keys(lastCountBackup.materials).length === 0) {
       return false;
@@ -1703,7 +1789,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const cloneLastEquipmentCount = (): boolean => {
-    if (isMaster && isContadorActive) return false;
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) return false;
 
     if (!lastCountBackup) return false;
     const hasEquips = lastCountBackup.equipments && Object.keys(lastCountBackup.equipments).length > 0;
@@ -1732,8 +1818,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // --- CLONAGEM SELETIVA POR GRUPO / TIPO (APENAS USUÁRIO MASTER) ---
   const cloneSelectiveCount = (target: CloneGroupTarget): { success: boolean; message: string } => {
-    if (isMaster && isContadorActive) {
-      return { success: false, message: 'Existe usuário realizando contagem no momento.' };
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) {
+      return { success: false, message: 'Existe contagem em andamento.' };
     }
 
     if (!lastCountBackup) {
@@ -1901,34 +1987,38 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { success: true, message: `Itens do grupo clonados com sucesso (${count} itens atualizados)!` };
   };
 
-  // --- ZERAR BASE DE TODA A CONTAGEM DO DIA (APENAS MASTER) ---
-  const resetAllTodayCountsByMaster = () => {
-    // "quando algum contador iniciar a contagem no app, o usuário master poderá logar no app, mas não poderá realizar nenhuma mudança no cadastro de Materiais, Equipamentos e Usuários, também não poderá realizar mudança na contagem já iniciada, aparecendo a mensagem: 'Existe contagem em andamento.', nas duas bases."
-    // "Somente após o envio do estoque por e-mail é que o acesso total das funcionalidades do app será liberado para o usuário Master"
-    if (isCountInProgress && !isReportSent) {
+  // --- ZERAR CONTAGEM POR TELA OU INTEGRALMENTE (APENAS MASTER) ---
+  const resetAllTodayCountsByMaster = (scope: 'materiais' | 'equipamentos' | 'ambos' = 'ambos') => {
+    // Enquanto houver contagem ou recontagem em andamento não enviada, Master não pode zerar
+    if ((isCountInProgress && !isReportSent) || recontagemUnlocked) {
       alert('Existe contagem em andamento.');
       return;
     }
 
-    // Guarda o estado atual no backup para não perder caso queira clonar
-    const hasData =
-      Object.keys(materialCounts).length > 0 ||
-      Object.keys(equipmentCounts).length > 0 ||
-      uncataloguedEquipments.length > 0;
+    const materialIdSet = new Set(materials.map(m => m.id));
+    const equipIdSet = new Set([...freezers.map(f => f.id), ...equipments.map(e => e.id)]);
 
-    if (hasData) {
+    // Backup preservando dados da outra categoria quando a zeragem for específica de uma tela
+    const hasMatData = Object.keys(materialCounts).length > 0;
+    const hasEqData = Object.keys(equipmentCounts).length > 0 || uncataloguedEquipments.length > 0;
+
+    if (
+      (scope === 'ambos' && (hasMatData || hasEqData)) ||
+      (scope === 'materiais' && hasMatData) ||
+      (scope === 'equipamentos' && hasEqData)
+    ) {
       const backup: LastCountBackup = {
         date: todayKey,
-        materials: { ...materialCounts },
-        equipments: { ...equipmentCounts },
-        uncatalogued: [...uncataloguedEquipments],
+        materials: scope === 'equipamentos' ? (lastCountBackup?.materials || { ...materialCounts }) : { ...materialCounts },
+        equipments: scope === 'materiais' ? (lastCountBackup?.equipments || { ...equipmentCounts }) : { ...equipmentCounts },
+        uncatalogued: scope === 'materiais' ? (lastCountBackup?.uncatalogued || [...uncataloguedEquipments]) : [...uncataloguedEquipments],
         savedAt: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
       };
       setLastCountBackup(backup);
       localStorage.setItem(getBranchStorageKey(activeBranch, 'last_count_backup'), JSON.stringify(backup));
     }
 
-    // EXIGÊNCIA: Ao clicar no botão "Zerar Dia", o relatório do campo "PRÉVIA DO RELATÓRIO" não irá ser alterado.
+    // Preserva prévia congelada caso ainda não exista
     if (!frozenReportText) {
       const currentReport = generateStockReportText({
         selectedStock: 'ambos',
@@ -1943,58 +2033,116 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         materialCounts,
         equipmentCounts,
         includeEquipmentDefects: false,
+        branch: activeBranch,
         isMobile: isPhoneFrame,
       });
       setFrozenReportText(currentReport);
       localStorage.setItem(getBranchStorageKey(activeBranch, 'frozen_report'), currentReport);
     }
 
-    setMaterialCounts({});
-    setEquipmentCounts({});
-    setUncataloguedEquipments([]);
-    setRecontagemSelectedIds({});
-    setRecontagemMaterialCounts({});
-    setRecontagemEquipmentCounts({});
-    setCountStartedBy(null);
-    setActiveContadorSession(null);
-    setIsReportSent(false);
-    setRecontagemUnlocked(false);
+    // Calcula estados remanescentes dependendo do escopo
+    const nextMaterialCounts = scope === 'equipamentos' ? materialCounts : {};
+    const nextEquipmentCounts = scope === 'materiais' ? equipmentCounts : {};
+    const nextUncatalogued = scope === 'materiais' ? uncataloguedEquipments : [];
 
-    const clearedStatus = {
-      countStartedBy: null,
-      isReportSent: false,
-      recontagemUnlocked: false,
-      activeContadorSession: null,
-      hasCounts: false,
-    };
-    if (activeBranch === 'PAULO AFONSO') {
-      setBranchStatusPA(clearedStatus);
-    } else {
-      setBranchStatusDEL(clearedStatus);
+    const nextRecMaterialCounts = scope === 'equipamentos' ? recontagemMaterialCounts : {};
+    const nextRecEquipmentCounts = scope === 'materiais' ? recontagemEquipmentCounts : {};
+
+    let nextRecSelectedIds: Record<string, boolean> = {};
+    if (scope !== 'ambos') {
+      Object.keys(recontagemSelectedIds).forEach(id => {
+        if (!recontagemSelectedIds[id]) return;
+        if (scope === 'materiais' && materialIdSet.has(id)) return;
+        if (scope === 'equipamentos' && equipIdSet.has(id)) return;
+        nextRecSelectedIds[id] = true;
+      });
     }
 
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'today_materials'), JSON.stringify({}));
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'today_equipments'), JSON.stringify({}));
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'today_uncatalogued'), JSON.stringify([]));
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_selected_ids'), JSON.stringify({}));
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_material_counts'), JSON.stringify({}));
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_equipment_counts'), JSON.stringify({}));
-    localStorage.removeItem(getBranchStorageKey(activeBranch, 'count_started_by'));
-    localStorage.removeItem(getBranchStorageKey(activeBranch, 'active_contador_session'));
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'is_report_sent'), JSON.stringify(false));
-    localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_unlocked'), JSON.stringify(false));
+    if (scope === 'materiais' || scope === 'ambos') {
+      setMaterialCounts({});
+      setRecontagemMaterialCounts({});
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'today_materials'), JSON.stringify({}));
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_material_counts'), JSON.stringify({}));
+    }
+
+    if (scope === 'equipamentos' || scope === 'ambos') {
+      setEquipmentCounts({});
+      setUncataloguedEquipments([]);
+      setRecontagemEquipmentCounts({});
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'today_equipments'), JSON.stringify({}));
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'today_uncatalogued'), JSON.stringify([]));
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_equipment_counts'), JSON.stringify({}));
+    }
+
+    setRecontagemSelectedIds(nextRecSelectedIds);
+    localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_selected_ids'), JSON.stringify(nextRecSelectedIds));
+
+    // Verifica se ainda restam contagens ou itens selecionados para recontagem na outra tela
+    const remainingHasMats = Object.values(nextMaterialCounts).some(hasMaterialEntryQuantity);
+    const remainingHasEqs = Object.keys(nextEquipmentCounts).length > 0 || nextUncatalogued.length > 0;
+    const remainingHasRecMats = Object.values(nextRecMaterialCounts).some(hasMaterialEntryQuantity);
+    const remainingHasRecEqs = Object.keys(nextRecEquipmentCounts).some(id => Boolean(nextRecEquipmentCounts[id]?.status));
+    const remainingHasRecIds = Object.keys(nextRecSelectedIds).some(id => Boolean(nextRecSelectedIds[id]));
+    const stillHasAnyCountData = remainingHasMats || remainingHasEqs || remainingHasRecMats || remainingHasRecEqs || remainingHasRecIds;
+
+    if (!stillHasAnyCountData) {
+      setCountStartedBy(null);
+      setRecontagemTargetContador(null);
+      setActiveContadorSession(null);
+      setIsReportSent(false);
+      setRecontagemUnlocked(false);
+
+      const clearedStatus = {
+        countStartedBy: null,
+        recontagemTargetContador: null,
+        isReportSent: false,
+        recontagemUnlocked: false,
+        activeContadorSession: null,
+        hasCounts: false,
+      };
+      if (activeBranch === 'PAULO AFONSO') {
+        setBranchStatusPA(clearedStatus);
+      } else {
+        setBranchStatusDEL(clearedStatus);
+      }
+
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'count_started_by'));
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'recontagem_target_contador'));
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'active_contador_session'));
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'is_report_sent'), JSON.stringify(false));
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_unlocked'), JSON.stringify(false));
+    } else {
+      const updatedBranchHasCounts = remainingHasMats || remainingHasEqs;
+      const updatePartialStatus = (prev: {
+        countStartedBy: CountStartedBy | null;
+        recontagemTargetContador: CountStartedBy | null;
+        isReportSent: boolean;
+        recontagemUnlocked: boolean;
+        activeContadorSession: ContadorSession | null;
+        hasCounts: boolean;
+      }) => ({
+        ...prev,
+        hasCounts: updatedBranchHasCounts,
+      });
+      if (activeBranch === 'PAULO AFONSO') {
+        setBranchStatusPA(updatePartialStatus);
+      } else {
+        setBranchStatusDEL(updatePartialStatus);
+      }
+    }
 
     markMasterChangesPending();
     broadcastSync('COUNT_UPDATED');
     broadcastSync('RECONTAGEM_UPDATED');
     broadcastSync('COUNT_RESET');
 
+    const scopeLabel = scope === 'materiais' ? 'Materiais' : scope === 'equipamentos' ? 'Equipamentos' : 'Materiais e Equipamentos';
     addLog({
       type: 'contagem',
       targetType: 'contagem',
       itemCode: 'ZERAR-CONTAGENS',
-      title: `Contagens Zeradas na Base [${activeBranch}] pelo Master`,
-      description: `Todas as contagens de materiais e equipamentos do dia foram zeradas localmente para a base ${activeBranch}. Clique em "Sincronizar Dados" na tela Cadastros para enviar ao Firebase.`
+      title: `Contagem de ${scopeLabel} Zerada [${activeBranch}]`,
+      description: `Contagem de ${scopeLabel} zerada localmente na base ${activeBranch}. Clique em "Sincronizar Dados" na tela Cadastros para enviar ao Firebase.`
     });
   };
 
@@ -2015,6 +2163,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       lastCountBackup,
       activeContadorSession,
       countStartedBy,
+      recontagemTargetContador,
       isReportSent,
       recontagemUnlocked,
       countDate: todayStr,
@@ -2043,6 +2192,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.removeItem(getBranchStorageKey(branchToMark, 'active_contador_session'));
       const sentStatus = {
         countStartedBy,
+        recontagemTargetContador,
         isReportSent: true,
         recontagemUnlocked: false,
         activeContadorSession: null,
@@ -2089,27 +2239,49 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { synced, message: errorMsg };
   };
 
-  // EXIGÊNCIA: Na tela Recontagem, do usuário Master, botão para liberação da recontagem ao contador inicial (em ambas as bases)
-  const releaseRecontagemForContador = async (): Promise<{ success: boolean; message: string }> => {
+  // EXIGÊNCIA: Na tela Recontagem, do usuário Master, botão para liberação da recontagem ao contador inicial ou selecionado (em ambas as bases)
+  const releaseRecontagemForContador = async (
+    targetContador?: StockUser | null
+  ): Promise<{ success: boolean; message: string }> => {
     if (!isMaster) {
       return { success: false, message: 'Apenas o usuário Master pode liberar a recontagem.' };
+    }
+    if (recontagemUnlocked || isAnyBaseCountInProgress) {
+      return { success: false, message: 'Existe contagem em andamento.' };
     }
     if (recontagemSelectedCount === 0) {
       return { success: false, message: 'Selecione ao menos 1 item antes de liberar a recontagem para o contador.' };
     }
 
+    const effTargetContador: CountStartedBy | null = targetContador
+      ? {
+          userId: targetContador.id,
+          userName: targetContador.name,
+          registration: targetContador.registration,
+          startedAt: Date.now(),
+        }
+      : countStartedBy || recontagemTargetContador;
+
+    if (!effTargetContador) {
+      return { success: false, message: 'Selecione um usuário contador da base para liberar a recontagem.' };
+    }
+
     const branchToRelease = activeBranchRef.current;
     setRecontagemUnlocked(true);
+    setRecontagemTargetContador(effTargetContador);
     localStorage.setItem(getBranchStorageKey(branchToRelease, 'recontagem_unlocked'), JSON.stringify(true));
+    localStorage.setItem(getBranchStorageKey(branchToRelease, 'recontagem_target_contador'), JSON.stringify(effTargetContador));
 
     const updateStatus = (prev: {
       countStartedBy: CountStartedBy | null;
+      recontagemTargetContador: CountStartedBy | null;
       isReportSent: boolean;
       recontagemUnlocked: boolean;
       activeContadorSession: ContadorSession | null;
       hasCounts: boolean;
     }) => ({
       ...prev,
+      recontagemTargetContador: effTargetContador,
       recontagemUnlocked: true,
     });
     if (branchToRelease === 'PAULO AFONSO') {
@@ -2123,6 +2295,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         branchToRelease,
         buildActiveBranchSyncPayload(branchToRelease, {
           recontagemUnlocked: true,
+          recontagemTargetContador: effTargetContador,
           activeContadorSession: null,
         })
       );
@@ -2131,9 +2304,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
       broadcastSync('RECONTAGEM_UPDATED');
 
-      const initiatorLabel = countStartedBy
-        ? `${countStartedBy.userName} (Matrícula: ${countStartedBy.registration})`
-        : 'contador inicial da base';
+      const initiatorLabel = `${effTargetContador.userName} (Matrícula: ${effTargetContador.registration})`;
 
       addLog({
         type: 'contagem',
@@ -2145,7 +2316,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       return {
         success: true,
-        message: `Recontagem liberada e sincronizada para o contador inicial na base ${branchToRelease}!`,
+        message: `Recontagem liberada e sincronizada para ${initiatorLabel} na base ${branchToRelease}!`,
       };
     } catch (err) {
       console.warn('Erro ao liberar recontagem no Firestore:', err);
@@ -2163,12 +2334,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!isMaster) {
       return { success: false, message: 'Apenas o usuário Master pode bloquear a recontagem.' };
     }
+    if (recontagemUnlocked) {
+      return { success: false, message: 'Existe contagem em andamento.' };
+    }
     const branchToLock = activeBranchRef.current;
     setRecontagemUnlocked(false);
     localStorage.setItem(getBranchStorageKey(branchToLock, 'recontagem_unlocked'), JSON.stringify(false));
 
     const updateStatus = (prev: {
       countStartedBy: CountStartedBy | null;
+      recontagemTargetContador: CountStartedBy | null;
       isReportSent: boolean;
       recontagemUnlocked: boolean;
       activeContadorSession: ContadorSession | null;
@@ -2207,22 +2382,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  // Marca envio da recontagem por e-mail pelo Contador inicial e sincroniza resultados com Firestore
+  // Marca envio da recontagem por e-mail pelo Contador e sincroniza resultados com Firestore
   const markRecountAsSent = async (): Promise<{ synced: boolean; message?: string }> => {
     const branchToMark = activeBranchRef.current;
     setRecontagemUnlocked(false);
+    setIsReportSent(true);
     setActiveContadorSession(null);
     localStorage.setItem(getBranchStorageKey(branchToMark, 'recontagem_unlocked'), JSON.stringify(false));
+    localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(true));
     localStorage.removeItem(getBranchStorageKey(branchToMark, 'active_contador_session'));
 
     const updateStatus = (prev: {
       countStartedBy: CountStartedBy | null;
+      recontagemTargetContador: CountStartedBy | null;
       isReportSent: boolean;
       recontagemUnlocked: boolean;
       activeContadorSession: ContadorSession | null;
       hasCounts: boolean;
     }) => ({
       ...prev,
+      isReportSent: true,
       recontagemUnlocked: false,
       activeContadorSession: null,
     });
@@ -2238,6 +2417,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       await pushBranchToFirestore(
         branchToMark,
         buildActiveBranchSyncPayload(branchToMark, {
+          isReportSent: true,
           recontagemUnlocked: false,
           activeContadorSession: null,
         })
@@ -2395,6 +2575,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // Helper para verificar status atualizado de contagem e sessão por base (com validação de virada de dia)
     const evaluateBranchStatus = (b: UnitBranch, remote: BranchSyncPayload | null) => {
       let remoteStarted: CountStartedBy | null = null;
+      let remoteRecTarget: CountStartedBy | null = null;
       let remoteReportSent = false;
       let remoteRecontagemUnlocked = false;
       let remoteSession: ContadorSession | null = null;
@@ -2405,6 +2586,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const isPrevDay = Boolean(remoteDay && remoteDay !== todayStr);
         if (!isPrevDay) {
           remoteStarted = remote.countStartedBy || null;
+          remoteRecTarget = remote.recontagemTargetContador || null;
           remoteReportSent = !!remote.isReportSent;
           remoteRecontagemUnlocked = !!remote.recontagemUnlocked;
           remoteSession = remote.activeContadorSession || null;
@@ -2417,6 +2599,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       let localStarted: CountStartedBy | null = null;
+      let localRecTarget: CountStartedBy | null = null;
       let localReportSent = false;
       let localRecontagemUnlocked = false;
       let localSession: ContadorSession | null = null;
@@ -2429,6 +2612,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (isLocalToday) {
           const sStarted = localStorage.getItem(getBranchStorageKey(b, 'count_started_by'));
           if (sStarted) localStarted = JSON.parse(sStarted);
+          const sRecTarget = localStorage.getItem(getBranchStorageKey(b, 'recontagem_target_contador'));
+          if (sRecTarget) localRecTarget = JSON.parse(sRecTarget);
           const sSent = localStorage.getItem(getBranchStorageKey(b, 'is_report_sent'));
           if (sSent) localReportSent = JSON.parse(sSent);
           const sRecUnlocked = localStorage.getItem(getBranchStorageKey(b, 'recontagem_unlocked'));
@@ -2454,6 +2639,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const rawCountStartedBy = remote !== null
         ? (remoteStarted || (!remoteReportSent && localHasUnsentCounts ? localStarted : null))
         : localStarted;
+      const recTargetContadorVal = remote !== null ? remoteRecTarget : localRecTarget;
       const isReportSentVal = remote !== null ? remoteReportSent : localReportSent;
       const recontagemUnlockedVal = remote !== null ? remoteRecontagemUnlocked : localRecontagemUnlocked;
       const hasCountsVal = remote !== null
@@ -2462,17 +2648,19 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       // A contagem só é considerada iniciada quando houver pelo menos 1 quantidade/item inserido
       const countStartedByVal = (hasCountsVal || isReportSentVal) ? rawCountStartedBy : null;
-      const activeSessionVal = (isReportSentVal || !hasCountsVal || !countStartedByVal)
+      const activeSessionVal = (!recontagemUnlockedVal && (isReportSentVal || !hasCountsVal || !countStartedByVal))
         ? null
         : (remote !== null
             ? (remoteSession || (!remoteReportSent && localHasUnsentCounts ? localSession : null))
             : localSession);
 
       const isCountInProgressVal =
-        hasCountsVal && (Boolean(countStartedByVal) || Boolean(activeSessionVal)) && !isReportSentVal;
+        recontagemUnlockedVal ||
+        (hasCountsVal && (Boolean(countStartedByVal) || Boolean(activeSessionVal)) && !isReportSentVal);
 
       return {
         countStartedBy: countStartedByVal,
+        recontagemTargetContador: recTargetContadorVal,
         isReportSent: isReportSentVal,
         recontagemUnlocked: recontagemUnlockedVal,
         activeSession: activeSessionVal,
@@ -2485,10 +2673,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const statusPA = evaluateBranchStatus('PAULO AFONSO', remotePA);
     const statusDEL = evaluateBranchStatus('DELMIRO', remoteDEL);
 
-    // EXIGÊNCIA: Permitir apenas 1 usuário contador após contagem iniciada (primeira quantidade inserida), informando aos demais que tentar logar: "Existe contagem em andamento.".
-    // Enquanto nada foi inserido, o app não bloqueia os demais por contagem iniciada.
+    // EXIGÊNCIA: Durante contagem inicial ou recontagem em andamento em qualquer base, usuários Master e demais contadores não podem acessar
     if (user.roleLevel === 'master') {
-      if (statusPA.isCountInProgress || statusDEL.isCountInProgress) {
+      if (statusPA.isCountInProgress || statusDEL.isCountInProgress || statusPA.recontagemUnlocked || statusDEL.recontagemUnlocked) {
         return {
           success: false,
           message: 'Existe contagem em andamento.'
@@ -2498,17 +2685,31 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (user.roleLevel === 'contador') {
       const targetStatus = targetBranch === 'PAULO AFONSO' ? statusPA : statusDEL;
+      const authorizedRecountContador = targetStatus.recontagemTargetContador || targetStatus.countStartedBy;
+      const matchesAuthorizedRecount = Boolean(
+        authorizedRecountContador &&
+        (authorizedRecountContador.userId === user.id ||
+          (authorizedRecountContador.registration && authorizedRecountContador.registration.toUpperCase() === cleanReg))
+      );
 
-      // EXIGÊNCIA: Após o envio do estoque por e-mail, apenas se a recontagem tiver sido liberada pelo Master
-      // o contador inicial poderá logar novamente para realizar a recontagem dos itens selecionados.
-      if (targetStatus.isReportSent) {
-        if (!targetStatus.recontagemUnlocked) {
+      // Se houver recontagem liberada ativa na base: SOMENTE o contador inicial/selecionado tem acesso até o envio da recontagem
+      if (targetStatus.recontagemUnlocked) {
+        if (!matchesAuthorizedRecount) {
+          return {
+            success: false,
+            message: 'Existe contagem em andamento.'
+          };
+        }
+      } else {
+        // Sem recontagem liberada: se o relatório já foi enviado, bloqueia todos os contadores até o Master zerar a contagem
+        if (targetStatus.isReportSent) {
           return {
             success: false,
             message: 'Existe contagem em andamento.'
           };
         }
 
+        // Se outro contador já iniciou contagem hoje (primeira quantidade inserida), bloqueia demais contadores
         if (targetStatus.countStartedBy) {
           const isInitiator = targetStatus.countStartedBy.userId === user.id ||
             (targetStatus.countStartedBy.registration && targetStatus.countStartedBy.registration.toUpperCase() === cleanReg);
@@ -2521,19 +2722,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       }
 
-      // EXIGÊNCIA: Somente o contador que iniciou a contagem (inseriu a primeira quantidade) poderá logar no app e dar continuidade à contagem iniciada no dia.
-      if (targetStatus.countStartedBy) {
-        const isInitiator = targetStatus.countStartedBy.userId === user.id ||
-          (targetStatus.countStartedBy.registration && targetStatus.countStartedBy.registration.toUpperCase() === cleanReg);
-        if (!isInitiator) {
-          return {
-            success: false,
-            message: 'Existe contagem em andamento.'
-          };
-        }
-      }
-
-      // Bloqueia outro contador apenas se houver contagem efetivamente em andamento (com itens/quantidades inseridos)
+      // Bloqueia outro contador se houver sessão ativa em andamento (contagem inicial ou recontagem)
       if (targetStatus.isCountInProgress && targetStatus.activeSession && targetStatus.activeSession.userId && targetStatus.activeSession.userId !== user.id) {
         const isRecent = !targetStatus.activeSession.lastHeartbeat || (Date.now() - targetStatus.activeSession.lastHeartbeat < 12 * 60 * 60 * 1000);
         if (isRecent) {
@@ -2585,8 +2774,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (user.roleLevel === 'contador') {
       const targetStatus = targetBranch === 'PAULO AFONSO' ? statusPA : statusDEL;
-      if (targetStatus.isCountInProgress) {
-        // Contador retomando contagem já iniciada (já possui item inserido)
+      if (targetStatus.isCountInProgress || targetStatus.recontagemUnlocked) {
+        // Contador retomando contagem já iniciada ou realizando recontagem liberada
         const resumedSession: ContadorSession = {
           userId: user.id,
           userName: user.name,
@@ -3102,7 +3291,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // --- OPÇÕES DE ENVIO / E-MAILS (100% INDEPENDENTES POR BASE) ---
   const updateEmailSettings = (settings: EmailSettings) => {
-    if (isMaster && isContadorActive) return;
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) return;
 
     setEmailSettings(settings);
     localStorage.setItem(getBranchStorageKey(activeBranch, 'email_settings'), JSON.stringify(settings));
@@ -3118,7 +3307,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const addEmail = (email: string) => {
-    if (isMaster && isContadorActive) return;
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) return;
 
     const trimmed = email.trim().toLowerCase();
     if (!trimmed || emailSettings.emails.includes(trimmed)) return;
@@ -3137,7 +3326,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const removeEmail = (email: string) => {
-    if (isMaster && isContadorActive) return;
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) return;
 
     const filtered = emailSettings.emails.filter(e => e !== email);
     const newDefault = emailSettings.defaultEmail === email
@@ -3157,7 +3346,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const setDefaultEmail = (email: string) => {
-    if (isMaster && isContadorActive) return;
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) return;
 
     setEmailSettings(prev => {
       const updated = {
@@ -3182,7 +3371,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const updateServerEmailConfig = (config: ServerEmailConfig) => {
-    if (isMaster && isContadorActive) return;
+    if (isMaster && (isContadorActive || isAnyBaseCountInProgress)) return;
 
     setServerEmailConfig(config);
     localStorage.setItem(getBranchStorageKey(activeBranch, 'server_email_config'), JSON.stringify(config));
@@ -3421,6 +3610,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // --- GESTÃO DE RECONTAGEM (100% INDEPENDENTE POR BASE) ---
   const toggleRecontagemItem = (id: string) => {
+    if (isMaster && (recontagemUnlocked || isAnyBaseCountInProgress)) return;
     setRecontagemSelectedIds(prev => {
       const isNowSelected = !prev[id];
       const updated = { ...prev, [id]: isNowSelected };
@@ -3457,6 +3647,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const setRecontagemItem = (id: string, selected: boolean) => {
+    if (isMaster && (recontagemUnlocked || isAnyBaseCountInProgress)) return;
     setRecontagemSelectedIds(prev => {
       const updated = { ...prev };
       if (selected) {
@@ -3492,6 +3683,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const selectAllRecontagem = (type: 'materiais' | 'equipamentos' | 'all') => {
+    if (isMaster && (recontagemUnlocked || isAnyBaseCountInProgress)) return;
     setRecontagemSelectedIds(prev => {
       const updated = { ...prev };
       if (type === 'materiais' || type === 'all') {
@@ -3545,6 +3737,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const clearAllRecontagem = () => {
+    if (isMaster && (recontagemUnlocked || isAnyBaseCountInProgress)) return;
     setRecontagemSelectedIds({});
     setRecontagemMaterialCounts({});
     setRecontagemEquipmentCounts({});
@@ -3555,6 +3748,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const updateRecontagemMaterialCount = (itemId: string, data: Partial<MaterialDailyEntry>) => {
+    if (!canActiveUserRecount) return;
     setRecontagemMaterialCounts(prev => {
       const current = prev[itemId] || { itemId, disponivel: 0, danificado: 0 };
       const updated = {
@@ -3568,6 +3762,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const updateRecontagemEquipmentCount = (itemId: string, data: Partial<EquipmentDailyEntry>) => {
+    if (!canActiveUserRecount) return;
     setRecontagemEquipmentCounts(prev => {
       const current = prev[itemId] || { itemId };
       const merged: EquipmentDailyEntry = { ...current, ...data, itemId };
@@ -3606,6 +3801,19 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return count;
   }, [materials, freezers, equipments, recontagemSelectedIds]);
 
+  // Bloqueio das demais telas (Materiais, Equipamentos e Exportar) para o Contador enquanto houver recontagem até Master zerar a contagem
+  const isRecontagemTabsBlockedForContador = useMemo(() => {
+    if (!activeUser || activeUser.roleLevel !== 'contador') return false;
+    if (recontagemUnlocked) return true;
+    const hasRecCounts =
+      Object.values(recontagemMaterialCounts).some(hasMaterialEntryQuantity) ||
+      Object.keys(recontagemEquipmentCounts).some(id => Boolean(recontagemEquipmentCounts[id]?.status));
+    if (recontagemSelectedCount > 0 && (isReportSent || Boolean(recontagemTargetContador) || hasRecCounts)) {
+      return true;
+    }
+    return false;
+  }, [activeUser, recontagemUnlocked, recontagemSelectedCount, isReportSent, recontagemTargetContador, recontagemMaterialCounts, recontagemEquipmentCounts]);
+
   return (
     <InventoryContext.Provider
       value={{
@@ -3625,11 +3833,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         isContadorActive,
         clearContadorSession,
         countStartedBy,
+        recontagemTargetContador,
         isReportSent,
         recontagemUnlocked,
         isCountInProgress,
         isAnyBaseCountInProgress,
         canActiveUserCount,
+        canActiveUserRecount,
+        isRecontagemTabsBlockedForContador,
         cantCountReason,
         markCountAsSent,
         releaseRecontagemForContador,

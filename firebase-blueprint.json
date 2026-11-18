@@ -72,7 +72,11 @@
         },
         "recontagemUnlocked": {
           "type": "boolean",
-          "description": "Whether recount access has been released by Master to the initial counter"
+          "description": "Whether recount access has been released by Master to the initial or selected counter"
+        },
+        "recontagemTargetContador": {
+          "type": "object",
+          "description": "Specific counter user selected by Master for recount when initiated without an initial count"
         },
         "emailRecipients": {
           "type": "string",

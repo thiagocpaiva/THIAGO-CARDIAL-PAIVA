@@ -30,6 +30,7 @@ const AppContent: React.FC = () => {
     isCountInProgress,
     isReportSent,
     recontagemUnlocked,
+    isRecontagemTabsBlockedForContador,
     countStartedBy,
     isPhoneFrame,
     setIsPhoneFrame,
@@ -39,16 +40,16 @@ const AppContent: React.FC = () => {
   
   const [activeTab, setActiveTab] = useState<MainTab>('materiais');
 
-  // Ao logar como Contador: se a recontagem estiver liberada após envio inicial, abre direto na tela Recontagem; caso contrário abre Materiais
+  // Ao logar como Contador ou quando houver recontagem ativa: abre direto na tela Recontagem
   React.useEffect(() => {
     if (activeUser && activeUser.roleLevel === 'contador') {
-      if (isReportSent && recontagemUnlocked) {
+      if (recontagemUnlocked || isRecontagemTabsBlockedForContador) {
         setActiveTab('recontagem');
       } else {
         setActiveTab('materiais');
       }
     }
-  }, [activeUser?.id, activeUser?.roleLevel]);
+  }, [activeUser?.id, activeUser?.roleLevel, recontagemUnlocked, isRecontagemTabsBlockedForContador]);
 
   // Modals state: Material
   const [isCreateMaterialOpen, setIsCreateMaterialOpen] = useState(false);
@@ -87,9 +88,13 @@ const AppContent: React.FC = () => {
     return <LoginView />;
   }
 
-  // Verificação de permissões: Cadastros, Usuários e Opções de Envio bloqueadas para Contador
+  // Verificação de permissões: Cadastros, Usuários e Opções de Envio bloqueadas para Contador;
+  // Durante recontagem para o Contador, Materiais, Equipamentos e Exportar também ficam bloqueadas até Master zerar a contagem.
   const isRestrictedTab = (!isMaster) && (
-    activeTab === 'cadastros' || activeTab === 'usuarios' || activeTab === 'opcoes_envio'
+    activeTab === 'cadastros' ||
+    activeTab === 'usuarios' ||
+    activeTab === 'opcoes_envio' ||
+    (isRecontagemTabsBlockedForContador && activeTab !== 'recontagem')
   );
 
   return (
@@ -175,17 +180,27 @@ const AppContent: React.FC = () => {
               <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto border border-rose-200">
                 <Lock className="w-7 h-7" />
               </div>
-              <h3 className="text-base font-extrabold text-slate-900">Acesso Restrito</h3>
+              <h3 className="text-base font-extrabold text-slate-900">
+                {isRecontagemTabsBlockedForContador ? 'Tela Bloqueada — Recontagem' : 'Acesso Restrito'}
+              </h3>
               <p className="text-xs text-slate-600 max-w-sm mx-auto">
-                Esta tela está bloqueada para o nível <strong>2 - Usuário Contador</strong>. 
-                Apenas <strong>1 - Usuário Master</strong> possui permissão para acessar Cadastros, Usuários e Opções de Envio.
+                {isRecontagemTabsBlockedForContador ? (
+                  <>
+                    As telas <strong>Materiais</strong>, <strong>Equipamentos</strong> e <strong>Exportar</strong> ficam bloqueadas enquanto houver recontagem para você até que o usuário Master zere a contagem.
+                  </>
+                ) : (
+                  <>
+                    Esta tela está bloqueada para o nível <strong>2 - Usuário Contador</strong>. 
+                    Apenas <strong>1 - Usuário Master</strong> possui permissão para acessar Cadastros, Usuários e Opções de Envio.
+                  </>
+                )}
               </p>
               <div className="pt-2">
                 <button
-                  onClick={() => setActiveTab('materiais')}
-                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs"
+                  onClick={() => setActiveTab(isRecontagemTabsBlockedForContador ? 'recontagem' : 'materiais')}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer"
                 >
-                  Voltar para Contagem de Materiais
+                  {isRecontagemTabsBlockedForContador ? 'Ir para Tela de Recontagem' : 'Voltar para Contagem de Materiais'}
                 </button>
               </div>
             </div>

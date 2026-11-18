@@ -117,6 +117,7 @@ export interface BranchSyncPayload {
   recontagemMaterialCounts?: Record<string, MaterialDailyEntry>;
   recontagemEquipmentCounts?: Record<string, EquipmentDailyEntry>;
   recontagemUnlocked?: boolean;
+  recontagemTargetContador?: CountStartedBy | null;
   emailRecipients?: string;
   emailSettings?: EmailSettings;
   serverEmailConfig?: ServerEmailConfig;

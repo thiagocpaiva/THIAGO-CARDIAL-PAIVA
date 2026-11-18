@@ -12,7 +12,8 @@ import {
   Maximize2,
   MapPin,
   ChevronDown,
-  RotateCcw
+  RotateCcw,
+  Lock
 } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { AppBrandIcon } from './AppBrandIcons';
@@ -39,7 +40,18 @@ export const Navigation: React.FC<NavigationProps> = ({
   isPhoneFrame,
   onTogglePhoneFrame,
 }) => {
-  const { activeUser, isMaster, logout, todayDateFormatted, activeBranch, setActiveBranch, recontagemSelectedCount, isReportSent, recontagemUnlocked } = useInventory();
+  const {
+    activeUser,
+    isMaster,
+    logout,
+    todayDateFormatted,
+    activeBranch,
+    setActiveBranch,
+    recontagemSelectedCount,
+    isReportSent,
+    recontagemUnlocked,
+    isRecontagemTabsBlockedForContador
+  } = useInventory();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
 
   // Para Usuários Master: Exibe todos os 6 botões (Materiais, Equipamentos, Recontagem, Cadastros, Exportar, Usuários)
@@ -49,7 +61,7 @@ export const Navigation: React.FC<NavigationProps> = ({
     { id: 'equipamentos' as MainTab, label: 'Equipamentos', icon: Zap, badge: undefined as number | undefined },
     ...(isMaster
       ? [{ id: 'recontagem' as MainTab, label: 'Recontagem', icon: RotateCcw, badge: recontagemSelectedCount > 0 ? recontagemSelectedCount : undefined }]
-      : (recontagemSelectedCount > 0 || (isReportSent && recontagemUnlocked))
+      : (recontagemSelectedCount > 0 || recontagemUnlocked || (isReportSent && recontagemUnlocked))
         ? [{ id: 'recontagem' as MainTab, label: 'Recontagem', icon: RotateCcw, badge: recontagemSelectedCount > 0 ? recontagemSelectedCount : undefined }]
         : []
     ),
@@ -58,7 +70,15 @@ export const Navigation: React.FC<NavigationProps> = ({
     ...(isMaster ? [{ id: 'usuarios' as MainTab, label: 'Usuários', icon: Users, badge: undefined as number | undefined }] : []),
   ];
 
+  const isTabLockedForContador = (tabId: MainTab) => {
+    if (isMaster || !isRecontagemTabsBlockedForContador) return false;
+    return tabId === 'materiais' || tabId === 'equipamentos' || tabId === 'exportar';
+  };
+
   const handleTabClick = (tab: typeof tabs[0]) => {
+    if (isTabLockedForContador(tab.id)) {
+      return;
+    }
     onChangeTab(tab.id);
   };
 
@@ -196,34 +216,44 @@ export const Navigation: React.FC<NavigationProps> = ({
           {tabs.map(tab => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
+            const isLocked = isTabLockedForContador(tab.id);
 
             return (
               <button
                 key={tab.id}
+                type="button"
+                disabled={isLocked}
                 onClick={() => handleTabClick(tab)}
+                title={isLocked ? 'Bloqueado durante a recontagem até o usuário Master zerar a contagem' : tab.label}
                 className={`flex flex-col items-center justify-center py-1.5 px-0.5 rounded-xl transition-all relative ${
-                  isActive 
-                    ? tab.id === 'materiais' 
-                      ? 'text-amber-600 font-bold scale-105' 
-                      : tab.id === 'equipamentos' 
-                        ? 'text-cyan-600 font-bold scale-105'
-                        : tab.id === 'recontagem'
-                          ? 'text-rose-600 font-bold scale-105'
-                          : tab.id === 'cadastros'
-                            ? 'text-purple-600 font-bold scale-105'
-                            : tab.id === 'exportar'
-                              ? 'text-emerald-600 font-bold scale-105'
-                              : 'text-indigo-600 font-bold scale-105'
-                    : 'text-slate-400 hover:text-slate-700'
+                  isLocked
+                    ? 'text-slate-300 opacity-55 cursor-not-allowed'
+                    : isActive
+                      ? tab.id === 'materiais'
+                        ? 'text-amber-600 font-bold scale-105'
+                        : tab.id === 'equipamentos'
+                          ? 'text-cyan-600 font-bold scale-105'
+                          : tab.id === 'recontagem'
+                            ? 'text-rose-600 font-bold scale-105'
+                            : tab.id === 'cadastros'
+                              ? 'text-purple-600 font-bold scale-105'
+                              : tab.id === 'exportar'
+                                ? 'text-emerald-600 font-bold scale-105'
+                                : 'text-indigo-600 font-bold scale-105'
+                      : 'text-slate-400 hover:text-slate-700'
                 }`}
               >
                 <div className="relative">
                   <Icon className={`w-5 h-5 ${isActive ? 'stroke-[2.5]' : 'stroke-[1.8]'}`} />
-                  {tab.badge !== undefined && (
+                  {isLocked ? (
+                    <span className="absolute -top-1 -right-2 w-3.5 h-3.5 bg-slate-500 text-white rounded-full flex items-center justify-center shadow-xs">
+                      <Lock className="w-2 h-2" />
+                    </span>
+                  ) : tab.badge !== undefined ? (
                     <span className="absolute -top-1.5 -right-2 px-1 py-0.2 bg-rose-600 text-white rounded-full text-[8px] font-black leading-tight shadow-xs">
                       {tab.badge}
                     </span>
-                  )}
+                  ) : null}
                 </div>
 
                 <span className="text-[9.5px] mt-1 tracking-tight truncate w-full text-center">

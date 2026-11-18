@@ -29,6 +29,7 @@ const AppContent: React.FC = () => {
     isAnyBaseCountInProgress,
     isCountInProgress,
     isReportSent,
+    recontagemUnlocked,
     countStartedBy,
     isPhoneFrame,
     setIsPhoneFrame,
@@ -38,10 +39,14 @@ const AppContent: React.FC = () => {
   
   const [activeTab, setActiveTab] = useState<MainTab>('materiais');
 
-  // Ao logar como Contador, sempre iniciar pela tela de Contagem de Materiais
+  // Ao logar como Contador: se a recontagem estiver liberada após envio inicial, abre direto na tela Recontagem; caso contrário abre Materiais
   React.useEffect(() => {
     if (activeUser && activeUser.roleLevel === 'contador') {
-      setActiveTab('materiais');
+      if (isReportSent && recontagemUnlocked) {
+        setActiveTab('recontagem');
+      } else {
+        setActiveTab('materiais');
+      }
     }
   }, [activeUser?.id, activeUser?.roleLevel]);
 

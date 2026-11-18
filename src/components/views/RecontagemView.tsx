@@ -9,19 +9,18 @@ import {
   CheckSquare, 
   Square, 
   Send, 
-  AlertCircle, 
   Eye, 
-  Sliders, 
-  Plus, 
-  Minus, 
-  AlertTriangle,
-  ClipboardCheck,
   Info,
-  X
+  X,
+  Unlock,
+  Lock,
+  PlusCircle,
+  RefreshCw,
+  UserCheck
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { MaterialItem, FreezerItem, EquipmentItem, MaterialDailyEntry, EquipmentDailyEntry } from '../../types/inventory';
-import { generateStockReportText, generateStockReportHtml } from '../../utils/reportGenerator';
+import { generateStockReportText, generateStockReportEmailTableText, generateStockReportHtml } from '../../utils/reportGenerator';
 import { sendEmailDirectly } from '../../utils/emailSender';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
 
@@ -35,11 +34,15 @@ export const RecontagemView: React.FC = () => {
     equipments,
     materialCounts,
     equipmentCounts,
+    countStartedBy,
+    recontagemUnlocked,
+    releaseRecontagemForContador,
+    revokeRecontagemForContador,
+    markRecountAsSent,
     recontagemSelectedIds,
     recontagemMaterialCounts,
     recontagemEquipmentCounts,
     toggleRecontagemItem,
-    setRecontagemItem,
     selectAllRecontagem,
     clearAllRecontagem,
     updateRecontagemMaterialCount,
@@ -55,6 +58,9 @@ export const RecontagemView: React.FC = () => {
   // Filtro na tela do Master: 'materiais' ou 'equipamentos'
   const [masterFilter, setMasterFilter] = useState<'materiais' | 'equipamentos'>('materiais');
   const [searchQuery, setSearchQuery] = useState('');
+  const [uncountedSearchQuery, setUncountedSearchQuery] = useState('');
+  const [isReleasingRecount, setIsReleasingRecount] = useState(false);
+  const [isSendingRecountEmail, setIsSendingRecountEmail] = useState(false);
 
   // No Master, permite alternar entre a tela de Seleção e a Prévia do Contador
   const [masterViewMode, setMasterViewMode] = useState<'selecao' | 'contador'>('selecao');
@@ -111,6 +117,26 @@ export const RecontagemView: React.FC = () => {
     return list.sort((a, b) => (a.item.patrimony || '').localeCompare(b.item.patrimony || '', 'pt-BR', { numeric: true, sensitivity: 'base' }));
   }, [freezers, equipments, equipmentCounts]);
 
+  // Demais Materiais e Equipamentos que NÃO foram contados inicialmente
+  const uncountedMaterials = useMemo(() => {
+    return materials.filter(m => !isMaterialCountedToday(m.id, materialCounts));
+  }, [materials, materialCounts]);
+
+  const uncountedEquipmentsList = useMemo(() => {
+    const list: Array<{ item: FreezerItem | EquipmentItem; kind: 'freezer' | 'chopeira' }> = [];
+    freezers.forEach(f => {
+      if (!isEquipmentCountedToday(f.id, equipmentCounts)) {
+        list.push({ item: f, kind: 'freezer' });
+      }
+    });
+    equipments.forEach(eq => {
+      if (!isEquipmentCountedToday(eq.id, equipmentCounts)) {
+        list.push({ item: eq, kind: 'chopeira' });
+      }
+    });
+    return list.sort((a, b) => (a.item.patrimony || '').localeCompare(b.item.patrimony || '', 'pt-BR', { numeric: true, sensitivity: 'base' }));
+  }, [freezers, equipments, equipmentCounts]);
+
   // Itens filtrados para a tela de Seleção do Master (ordenados alfabeticamente por descrição / patrimônio)
   const filteredMaterials = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -127,7 +153,7 @@ export const RecontagemView: React.FC = () => {
 
   const filteredEquipments = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const list = countedEquipmentsList.filter(({ item, kind }) => {
+    const list = countedEquipmentsList.filter(({ item }) => {
       if (!q) return true;
       const f = item as FreezerItem;
       const eq = item as EquipmentItem;
@@ -144,24 +170,57 @@ export const RecontagemView: React.FC = () => {
     return list.slice().sort((a, b) => (a.item.patrimony || '').localeCompare(b.item.patrimony || '', 'pt-BR', { numeric: true, sensitivity: 'base' }));
   }, [countedEquipmentsList, searchQuery]);
 
-  // Itens selecionados para a Recontagem efetiva (somente itens que possuam contagem hoje)
+  // Itens não contados inicialmente filtrados pela busca do campo específico do Master
+  const filteredUncountedMaterials = useMemo(() => {
+    const q = uncountedSearchQuery.trim().toLowerCase();
+    const list = uncountedMaterials.filter(m => {
+      if (!q) return true;
+      return (
+        m.code.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q) ||
+        (m.subOption && m.subOption.toLowerCase().includes(q))
+      );
+    });
+    return list.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR', { sensitivity: 'base' }));
+  }, [uncountedMaterials, uncountedSearchQuery]);
+
+  const filteredUncountedEquipments = useMemo(() => {
+    const q = uncountedSearchQuery.trim().toLowerCase();
+    const list = uncountedEquipmentsList.filter(({ item }) => {
+      if (!q) return true;
+      const f = item as FreezerItem;
+      const eq = item as EquipmentItem;
+      return (
+        item.code.toLowerCase().includes(q) ||
+        item.patrimony.toLowerCase().includes(q) ||
+        item.name.toLowerCase().includes(q) ||
+        (f.brand && f.brand.toLowerCase().includes(q)) ||
+        (f.model && f.model.toLowerCase().includes(q)) ||
+        (eq.brand && eq.brand.toLowerCase().includes(q)) ||
+        (item.defect && item.defect.toLowerCase().includes(q))
+      );
+    });
+    return list.slice().sort((a, b) => (a.item.patrimony || '').localeCompare(b.item.patrimony || '', 'pt-BR', { numeric: true, sensitivity: 'base' }));
+  }, [uncountedEquipmentsList, uncountedSearchQuery]);
+
+  // Itens selecionados para a Recontagem efetiva (inclui tanto contados inicialmente quanto os não contados selecionados pelo Master)
   const selectedMaterials = useMemo(() => {
     return materials
-      .filter(m => Boolean(recontagemSelectedIds[m.id]) && isMaterialCountedToday(m.id, materialCounts))
+      .filter(m => Boolean(recontagemSelectedIds[m.id]))
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR', { sensitivity: 'base' }));
-  }, [materials, recontagemSelectedIds, materialCounts]);
+  }, [materials, recontagemSelectedIds]);
 
   const selectedFreezers = useMemo(() => {
     return freezers
-      .filter(f => Boolean(recontagemSelectedIds[f.id]) && isEquipmentCountedToday(f.id, equipmentCounts))
+      .filter(f => Boolean(recontagemSelectedIds[f.id]))
       .sort((a, b) => (a.patrimony || '').localeCompare(b.patrimony || '', 'pt-BR', { numeric: true, sensitivity: 'base' }));
-  }, [freezers, recontagemSelectedIds, equipmentCounts]);
+  }, [freezers, recontagemSelectedIds]);
 
   const selectedEquipments = useMemo(() => {
     return equipments
-      .filter(eq => Boolean(recontagemSelectedIds[eq.id]) && isEquipmentCountedToday(eq.id, equipmentCounts))
+      .filter(eq => Boolean(recontagemSelectedIds[eq.id]))
       .sort((a, b) => (a.patrimony || '').localeCompare(b.patrimony || '', 'pt-BR', { numeric: true, sensitivity: 'base' }));
-  }, [equipments, recontagemSelectedIds, equipmentCounts]);
+  }, [equipments, recontagemSelectedIds]);
 
   // Determina estoque selecionado para o gerador de relatório
   const recountStockType: 'materiais' | 'equipamentos' | 'ambos' = useMemo(() => {
@@ -206,8 +265,9 @@ export const RecontagemView: React.FC = () => {
     isPhoneFrame,
   ]);
 
-  // Enviar E-mail da Recontagem (mesmo formato que o e-mail da contagem)
+  // Enviar E-mail da Recontagem (mesmo formato em tabela e sincroniza com o Firebase)
   const handleSendRecountEmail = async () => {
+    if (isSendingRecountEmail) return;
     setSendResultMsg(null);
 
     const primaryTo = (defaultSenderEmail || '').trim();
@@ -241,10 +301,28 @@ export const RecontagemView: React.FC = () => {
       isRecontagem: true,
     });
 
-    // Copia relatório para a área de transferência com HTML e texto
+    const emailTableBody = generateStockReportEmailTableText({
+      selectedStock: recountStockType,
+      todayDateFormatted,
+      activeUser,
+      defaultSenderEmail,
+      recipients: effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients,
+      materials: selectedMaterials,
+      freezers: selectedFreezers,
+      equipments: selectedEquipments,
+      uncataloguedEquipments: [],
+      materialCounts: recontagemMaterialCounts,
+      equipmentCounts: recontagemEquipmentCounts,
+      includeEquipmentDefects: false,
+      branch: activeBranch,
+      isMobile: isPhoneFrame,
+      isRecontagem: true,
+    });
+
+    // Copia relatório em formato tabela (HTML e texto) para a área de transferência
     if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
       try {
-        const blobText = new Blob([recountReportText], { type: 'text/plain' });
+        const blobText = new Blob([emailTableBody], { type: 'text/plain' });
         const blobHtml = new Blob([reportHtml], { type: 'text/html' });
         await navigator.clipboard.write([
           new ClipboardItem({
@@ -253,8 +331,10 @@ export const RecontagemView: React.FC = () => {
           }),
         ]);
       } catch {
-        navigator.clipboard.writeText(recountReportText);
+        navigator.clipboard.writeText(emailTableBody).catch(() => {});
       }
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(emailTableBody).catch(() => {});
     }
 
     // Tenta envio em segundo plano se houver servidor configurado
@@ -263,19 +343,32 @@ export const RecontagemView: React.FC = () => {
       senderName: serverEmailConfig?.senderName || 'RECONTAGEM DE ESTOQUE',
       toEmails: effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients,
       subject,
-      bodyText: recountReportText,
+      bodyText: emailTableBody,
       htmlBody: reportHtml,
       smtpConfig: serverEmailConfig,
     }).catch(() => {});
 
+    // Sincroniza os dados da recontagem com o Firebase e conclui a liberação
+    if (!isMaster) {
+      setIsSendingRecountEmail(true);
+      try {
+        const syncRes = await markRecountAsSent();
+        if (!syncRes.synced && syncRes.message) {
+          showToast(syncRes.message);
+        }
+      } finally {
+        setIsSendingRecountEmail(false);
+      }
+    }
+
     // Abre programa de e-mail padrão do dispositivo
-    let mailtoUrl = `mailto:${encodeURIComponent(effectiveTo)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(recountReportText)}`;
+    let mailtoUrl = `mailto:${encodeURIComponent(effectiveTo)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailTableBody)}`;
     if (effectiveCc) {
       mailtoUrl += `&cc=${encodeURIComponent(effectiveCc)}`;
     }
     window.location.href = mailtoUrl;
 
-    setSendResultMsg('Aplicativo de e-mail acionado e relatório copiado para a área de transferência!');
+    setSendResultMsg('Recontagem sincronizada, aplicativo de e-mail acionado e relatório copiado para a área de transferência!');
   };
 
   // =========================================================================
@@ -353,9 +446,16 @@ export const RecontagemView: React.FC = () => {
                       >
                         <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
                           <div>
-                            <span className="text-[10px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                              [{mat.code}]
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                                [{mat.code}]
+                              </span>
+                              {!isMaterialCountedToday(mat.id, materialCounts) && (
+                                <span className="text-[9px] font-bold text-purple-800 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
+                                  Não contado inicialmente
+                                </span>
+                              )}
+                            </div>
                             <h4 className="text-xs font-bold text-slate-900 mt-1 leading-tight">
                               {mat.name}
                             </h4>
@@ -624,6 +724,11 @@ export const RecontagemView: React.FC = () => {
                               <span className="text-[9px] font-bold text-slate-500">
                                 {f.voltage} • {f.brand}
                               </span>
+                              {!isEquipmentCountedToday(f.id, equipmentCounts) && (
+                                <span className="text-[9px] font-bold text-purple-800 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
+                                  Não contado inicialmente
+                                </span>
+                              )}
                             </div>
                             <h4 className="text-xs font-bold text-slate-900 mt-1 leading-tight">
                               {f.name}
@@ -701,6 +806,11 @@ export const RecontagemView: React.FC = () => {
                               <span className="text-[9px] font-bold text-slate-500">
                                 {eq.type === 'chopeira_1_torneira' ? '1 Torneira' : '2 Torneiras'} • {eq.voltage}
                               </span>
+                              {!isEquipmentCountedToday(eq.id, equipmentCounts) && (
+                                <span className="text-[9px] font-bold text-purple-800 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
+                                  Não contado inicialmente
+                                </span>
+                              )}
                             </div>
                             <h4 className="text-xs font-bold text-slate-900 mt-1 leading-tight">
                               {eq.name}
@@ -759,14 +869,14 @@ export const RecontagemView: React.FC = () => {
 
             {/* SEÇÃO: BOTÃO ENVIAR E-MAIL DA RECONTAGEM */}
             <div className="bg-white border border-slate-200 rounded-2xl p-3.5 shadow-xs">
-              {/* Botão para enviar o e-mail da recontagem (mesmo formato que o e-mail da contagem) */}
               <button
                 type="button"
+                disabled={isSendingRecountEmail}
                 onClick={handleSendRecountEmail}
-                className="w-full py-3.5 bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-3.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Send className="w-4 h-4 stroke-[3]" />
-                <span>Enviar Relatório da Recontagem por E-mail</span>
+                <span>{isSendingRecountEmail ? 'Sincronizando e abrindo e-mail...' : 'Enviar Relatório da Recontagem por E-mail'}</span>
               </button>
             </div>
 
@@ -857,8 +967,8 @@ export const RecontagemView: React.FC = () => {
         renderContadorRecountView()
       ) : (
         <>
-          {/* Card de Resumo da Seleção Atual */}
-          <div className="bg-white border-2 border-slate-200 rounded-2xl p-3.5 space-y-2.5 shadow-xs">
+          {/* Card de Resumo da Seleção Atual e Liberação da Recontagem ao Contador Inicial */}
+          <div className="bg-white border-2 border-slate-200 rounded-2xl p-3.5 space-y-3 shadow-xs">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-pulse"></span>
@@ -886,13 +996,99 @@ export const RecontagemView: React.FC = () => {
 
             {recontagemSelectedCount > 0 ? (
               <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-950 leading-relaxed font-bold">
-                Tela de recontagem liberada para o contador.
+                {recontagemSelectedCount} item(ns) marcado(s) na base {activeBranch}. Clique em &quot;Liberar Recontagem para o Contador Inicial&quot; abaixo para enviar a seleção ao Firebase e liberar o acesso ao contador que iniciou a contagem.
               </div>
             ) : (
               <p className="text-[11px] text-slate-500">
-                Marque os itens abaixo para ativar a tela de recontagem para o usuário Contador nesta base.
+                Marque os itens abaixo (contados ou não contados inicialmente) e clique no botão de liberação para permitir que o contador inicial acesse o app novamente.
               </p>
             )}
+
+            {/* Painel de Liberação para o Contador Inicial */}
+            <div className={`p-3 rounded-2xl border-2 space-y-2.5 ${
+              recontagemUnlocked
+                ? 'bg-emerald-50/70 border-emerald-400'
+                : 'bg-slate-50 border-slate-200'
+            }`}>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <UserCheck className={`w-4 h-4 ${recontagemUnlocked ? 'text-emerald-700' : 'text-slate-600'}`} />
+                  <div className="text-[11px]">
+                    <span className="font-bold text-slate-700 block">
+                      Contador inicial da base {activeBranch}:{' '}
+                      <strong className="text-slate-900">
+                        {countStartedBy
+                          ? `${countStartedBy.userName} (Matrícula: ${countStartedBy.registration})`
+                          : 'Nenhum registro inicial hoje'}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                  recontagemUnlocked
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {recontagemUnlocked ? 'Recontagem Liberada' : 'Bloqueada'}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  disabled={isReleasingRecount || recontagemSelectedCount === 0}
+                  onClick={async () => {
+                    if (isReleasingRecount) return;
+                    setIsReleasingRecount(true);
+                    try {
+                      const res = await releaseRecontagemForContador();
+                      showToast(res.message);
+                    } finally {
+                      setIsReleasingRecount(false);
+                    }
+                  }}
+                  className={`flex-1 py-2.5 px-3 rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-[0.99] disabled:opacity-50 ${
+                    recontagemUnlocked
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                      : 'bg-rose-600 hover:bg-rose-500 text-white'
+                  }`}
+                >
+                  {isReleasingRecount ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Unlock className="w-4 h-4" />
+                  )}
+                  <span>
+                    {isReleasingRecount
+                      ? 'Liberando e sincronizando...'
+                      : recontagemUnlocked
+                        ? 'Atualizar Liberação da Recontagem'
+                        : 'Liberar Recontagem para o Contador Inicial'}
+                  </span>
+                </button>
+
+                {recontagemUnlocked && (
+                  <button
+                    type="button"
+                    disabled={isReleasingRecount}
+                    onClick={async () => {
+                      if (isReleasingRecount) return;
+                      setIsReleasingRecount(true);
+                      try {
+                        const res = await revokeRecontagemForContador();
+                        showToast(res.message);
+                      } finally {
+                        setIsReleasingRecount(false);
+                      }
+                    }}
+                    className="py-2.5 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-all"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Bloquear</span>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* DOIS FILTROS PRINCIPAIS: MATERIAIS E EQUIPAMENTOS */}
@@ -1111,6 +1307,185 @@ export const RecontagemView: React.FC = () => {
               )}
             </div>
           )}
+
+          {/* CAMPO ESPECÍFICO PARA SELECIONAR OS DEMAIS MATERIAIS E EQUIPAMENTOS NÃO CONTADOS INICIALMENTE */}
+          <div className="bg-white border-2 border-purple-200 rounded-2xl p-3.5 space-y-3 shadow-xs mt-4">
+            <div className="flex items-center justify-between gap-2 flex-wrap border-b border-purple-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <PlusCircle className="w-4 h-4 text-purple-700 shrink-0" />
+                <div>
+                  <h3 className="text-xs font-black text-purple-950 uppercase tracking-wide">
+                    {masterFilter === 'materiais'
+                      ? `Demais Materiais Não Contados Inicialmente (${uncountedMaterials.length})`
+                      : `Demais Equipamentos Não Contados Inicialmente (${uncountedEquipmentsList.length})`}
+                  </h3>
+                  <p className="text-[10px] text-purple-800 font-medium">
+                    Caso precise, selecione aqui itens que não tiveram contagem inicial para aparecerem na recontagem do contador inicial ({activeBranch}).
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="relative">
+              <input
+                type="text"
+                value={uncountedSearchQuery}
+                onChange={e => setUncountedSearchQuery(e.target.value)}
+                placeholder={
+                  masterFilter === 'materiais'
+                    ? 'Selecionar ou buscar materiais não contados por código ou nome...'
+                    : 'Selecionar ou buscar equipamentos não contados por código ou patrimônio...'
+                }
+                className="w-full bg-purple-50/50 border border-purple-200 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-purple-500 focus:bg-white"
+              />
+              <Search className="w-4 h-4 text-purple-400 absolute left-3 top-2.5" />
+            </div>
+
+            {masterFilter === 'materiais' ? (
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">
+                {filteredUncountedMaterials.length === 0 ? (
+                  <div className="p-5 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
+                    {uncountedMaterials.length === 0
+                      ? `Todos os materiais cadastrados na base ${activeBranch} já possuem contagem inicial.`
+                      : `Nenhum material não contado corresponde à busca "${uncountedSearchQuery}".`}
+                  </div>
+                ) : (
+                  filteredUncountedMaterials.map(m => {
+                    const isSelected = Boolean(recontagemSelectedIds[m.id]);
+
+                    return (
+                      <div
+                        key={m.id}
+                        onClick={() => toggleRecontagemItem(m.id)}
+                        className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+                          isSelected
+                            ? 'bg-rose-50/70 border-rose-400 shadow-xs'
+                            : 'bg-white border-slate-200 hover:border-purple-300 hover:bg-purple-50/30'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">
+                              [{m.code}]
+                            </span>
+                            {m.subOption && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                                {m.subOption}
+                              </span>
+                            )}
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-purple-50 text-purple-800 border border-purple-200">
+                              Não contado
+                            </span>
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-900 mt-1 truncate">
+                            {m.name}
+                          </h4>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleRecontagemItem(m.id);
+                          }}
+                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+                            isSelected
+                              ? 'bg-rose-600 text-white shadow-xs scale-105'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'
+                          }`}
+                        >
+                          {isSelected ? (
+                            <>
+                              <CheckSquare className="w-4 h-4 stroke-[2.5]" />
+                              <span>Recontar</span>
+                            </>
+                          ) : (
+                            <>
+                              <Square className="w-4 h-4 text-slate-400" />
+                              <span>Recontar</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-0.5">
+                {filteredUncountedEquipments.length === 0 ? (
+                  <div className="p-5 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
+                    {uncountedEquipmentsList.length === 0
+                      ? `Todos os equipamentos cadastrados na base ${activeBranch} já possuem contagem inicial.`
+                      : `Nenhum equipamento não contado corresponde à busca "${uncountedSearchQuery}".`}
+                  </div>
+                ) : (
+                  filteredUncountedEquipments.map(({ item, kind }) => {
+                    const isSelected = Boolean(recontagemSelectedIds[item.id]);
+                    const f = item as FreezerItem;
+                    const eq = item as EquipmentItem;
+
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => toggleRecontagemItem(item.id)}
+                        className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 cursor-pointer select-none ${
+                          isSelected
+                            ? 'bg-rose-50/70 border-rose-400 shadow-xs'
+                            : 'bg-white border-slate-200 hover:border-purple-300 hover:bg-purple-50/30'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-200">
+                              [{item.code}]
+                            </span>
+                            <span className="text-[10px] font-mono font-bold text-cyan-900 bg-cyan-50 px-1.5 py-0.5 rounded border border-cyan-200">
+                              Patr: {item.patrimony}
+                            </span>
+                            <span className="text-[9px] font-bold text-slate-500">
+                              {kind === 'freezer' ? `${f.brand} • ${f.model}` : `${eq.type === 'chopeira_1_torneira' ? '1 Torneira' : '2 Torneiras'}`}
+                            </span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-purple-50 text-purple-800 border border-purple-200">
+                              Não contado
+                            </span>
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-900 mt-1 truncate">
+                            {item.name}
+                          </h4>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleRecontagemItem(item.id);
+                          }}
+                          className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+                            isSelected
+                              ? 'bg-rose-600 text-white shadow-xs scale-105'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-300'
+                          }`}
+                        >
+                          {isSelected ? (
+                            <>
+                              <CheckSquare className="w-4 h-4 stroke-[2.5]" />
+                              <span>Recontar</span>
+                            </>
+                          ) : (
+                            <>
+                              <Square className="w-4 h-4 text-slate-400" />
+                              <span>Recontar</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

@@ -1211,7 +1211,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               <p className="text-[11px] font-semibold mt-0.5">
                 {hasPendingMasterSync ? (
                   <span className="text-amber-700">
-                    Alterações locais pendentes — clique em "Sincronizar Dados" para enviar ao Firebase.
+                    Alterações locais pendentes na base {activeBranch} — clique em &quot;Sincronizar Dados&quot; para enviar ao Firebase.
                   </span>
                 ) : lastFirebaseSyncAt ? (
                   <span className="text-emerald-700">
@@ -1219,7 +1219,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                   </span>
                 ) : (
                   <span className="text-slate-500">
-                    Sincronização manual das bases com o Firebase.
+                    Sincronização manual da base {activeBranch} com o Firebase.
                   </span>
                 )}
               </p>
@@ -1252,7 +1252,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                   ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-400'
                   : 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500'
               }`}
-              title="Sincronizar integralmente todas as bases (PAULO AFONSO, DELMIRO) e Usuários com o Firebase"
+              title={`Sincronizar dados da base ${activeBranch} com o Firebase`}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncingFirebase ? 'animate-spin' : ''}`} />
               <span>{isSyncingFirebase ? 'Sincronizando...' : 'Sincronizar Dados'}</span>

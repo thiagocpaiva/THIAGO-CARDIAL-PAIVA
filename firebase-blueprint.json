@@ -70,6 +70,10 @@
           "type": "object",
           "description": "Recount equipments count entries"
         },
+        "recontagemUnlocked": {
+          "type": "boolean",
+          "description": "Whether recount access has been released by Master to the initial counter"
+        },
         "emailRecipients": {
           "type": "string",
           "description": "Configured email recipients text"

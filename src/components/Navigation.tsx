@@ -39,18 +39,18 @@ export const Navigation: React.FC<NavigationProps> = ({
   isPhoneFrame,
   onTogglePhoneFrame,
 }) => {
-  const { activeUser, isMaster, logout, todayDateFormatted, activeBranch, setActiveBranch, recontagemSelectedCount } = useInventory();
+  const { activeUser, isMaster, logout, todayDateFormatted, activeBranch, setActiveBranch, recontagemSelectedCount, isReportSent, recontagemUnlocked } = useInventory();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
 
   // Para Usuários Master: Exibe todos os 6 botões (Materiais, Equipamentos, Recontagem, Cadastros, Exportar, Usuários)
-  // Para Usuários Contadores: Exibe Materiais, Equipamentos, (Recontagem caso haja itens a recontar) e Exportar
+  // Para Usuários Contadores: Exibe Materiais, Equipamentos, (Recontagem caso liberada/haja itens a recontar) e Exportar
   const tabs = [
     { id: 'materiais' as MainTab, label: 'Materiais', icon: Layers, badge: undefined as number | undefined },
     { id: 'equipamentos' as MainTab, label: 'Equipamentos', icon: Zap, badge: undefined as number | undefined },
     ...(isMaster
       ? [{ id: 'recontagem' as MainTab, label: 'Recontagem', icon: RotateCcw, badge: recontagemSelectedCount > 0 ? recontagemSelectedCount : undefined }]
-      : recontagemSelectedCount > 0
-        ? [{ id: 'recontagem' as MainTab, label: 'Recontagem', icon: RotateCcw, badge: recontagemSelectedCount }]
+      : (recontagemSelectedCount > 0 || (isReportSent && recontagemUnlocked))
+        ? [{ id: 'recontagem' as MainTab, label: 'Recontagem', icon: RotateCcw, badge: recontagemSelectedCount > 0 ? recontagemSelectedCount : undefined }]
         : []
     ),
     ...(isMaster ? [{ id: 'cadastros' as MainTab, label: 'Cadastros', icon: Edit3, badge: undefined as number | undefined }] : []),

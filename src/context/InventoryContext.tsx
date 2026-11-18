@@ -61,11 +61,15 @@ interface InventoryContextType {
   // Estado e Regras de Contagem Concorrente
   countStartedBy: CountStartedBy | null;
   isReportSent: boolean;
+  recontagemUnlocked: boolean;
   isCountInProgress: boolean;
   isAnyBaseCountInProgress: boolean;
   canActiveUserCount: boolean;
   cantCountReason: string | null;
   markCountAsSent: (branch?: UnitBranch) => Promise<{ synced: boolean; message?: string }>;
+  releaseRecontagemForContador: () => Promise<{ success: boolean; message: string }>;
+  revokeRecontagemForContador: () => Promise<{ success: boolean; message: string }>;
+  markRecountAsSent: () => Promise<{ synced: boolean; message?: string }>;
 
   // Sincronização Manual com Firebase (Apenas Master na tela Cadastros)
   syncMasterDataToFirebase: () => Promise<{ success: boolean; message: string }>;
@@ -370,14 +374,20 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return loadInitialBranchData<boolean>(activeBranch, 'is_report_sent', false, []);
   });
 
+  // Indicador de recontagem liberada pelo Master para o contador inicial
+  const [recontagemUnlocked, setRecontagemUnlocked] = useState<boolean>(() => {
+    return loadInitialBranchData<boolean>(activeBranch, 'recontagem_unlocked', false, []);
+  });
+
   const readBranchInitialStatus = (b: UnitBranch) => {
     try {
       const storedDay = localStorage.getItem(getBranchStorageKey(b, 'calendar_day'));
       if (storedDay && storedDay !== getTodayKey()) {
-        return { countStartedBy: null, isReportSent: false, activeContadorSession: null, hasCounts: false };
+        return { countStartedBy: null, isReportSent: false, recontagemUnlocked: false, activeContadorSession: null, hasCounts: false };
       }
       const csbRaw = localStorage.getItem(getBranchStorageKey(b, 'count_started_by'));
       const irsRaw = localStorage.getItem(getBranchStorageKey(b, 'is_report_sent'));
+      const recUnlockedRaw = localStorage.getItem(getBranchStorageKey(b, 'recontagem_unlocked'));
       const sessRaw = localStorage.getItem(getBranchStorageKey(b, 'active_contador_session'));
       const matsRaw = localStorage.getItem(getBranchStorageKey(b, 'today_materials'));
       const eqsRaw = localStorage.getItem(getBranchStorageKey(b, 'today_equipments'));
@@ -385,6 +395,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const parsedCsb: CountStartedBy | null = csbRaw ? JSON.parse(csbRaw) : null;
       const parsedIrs: boolean = irsRaw ? JSON.parse(irsRaw) : false;
+      const parsedRecUnlocked: boolean = recUnlockedRaw ? JSON.parse(recUnlockedRaw) : false;
       const parsedMats: Record<string, MaterialDailyEntry> = matsRaw ? JSON.parse(matsRaw) : {};
       const parsedEqs: Record<string, EquipmentDailyEntry> = eqsRaw ? JSON.parse(eqsRaw) : {};
       const parsedUncat: UncataloguedEquipment[] = uncatRaw ? JSON.parse(uncatRaw) : [];
@@ -401,11 +412,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return {
         countStartedBy: parsedCsb,
         isReportSent: parsedIrs,
+        recontagemUnlocked: parsedRecUnlocked,
         activeContadorSession: parsedSess,
         hasCounts,
       };
     } catch {
-      return { countStartedBy: null, isReportSent: false, activeContadorSession: null, hasCounts: false };
+      return { countStartedBy: null, isReportSent: false, recontagemUnlocked: false, activeContadorSession: null, hasCounts: false };
     }
   };
 
@@ -418,6 +430,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [branchStatusPA, setBranchStatusPA] = useState<{
     countStartedBy: CountStartedBy | null;
     isReportSent: boolean;
+    recontagemUnlocked: boolean;
     activeContadorSession: ContadorSession | null;
     hasCounts: boolean;
   }>(() => readBranchInitialStatus('PAULO AFONSO'));
@@ -425,6 +438,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [branchStatusDEL, setBranchStatusDEL] = useState<{
     countStartedBy: CountStartedBy | null;
     isReportSent: boolean;
+    recontagemUnlocked: boolean;
     activeContadorSession: ContadorSession | null;
     hasCounts: boolean;
   }>(() => readBranchInitialStatus('DELMIRO'));
@@ -606,11 +620,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.removeItem(getBranchStorageKey(newBranch, 'count_started_by'));
       localStorage.removeItem(getBranchStorageKey(newBranch, 'active_contador_session'));
       localStorage.setItem(getBranchStorageKey(newBranch, 'is_report_sent'), JSON.stringify(false));
+      localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_unlocked'), JSON.stringify(false));
       localStorage.setItem(getBranchStorageKey(newBranch, 'calendar_day'), currentTodayKey);
     }
 
     const cStarted = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(newBranch, 'count_started_by', null, []);
     const repSent = isNewDay ? false : loadInitialBranchData<boolean>(newBranch, 'is_report_sent', false, []);
+    const recUnlocked = isNewDay ? false : loadInitialBranchData<boolean>(newBranch, 'recontagem_unlocked', false, []);
     const hasBranchCounts = !isNewDay && (
       Object.values((mCounts || {}) as Record<string, MaterialDailyEntry>).some(hasMaterialEntryQuantity) ||
       Object.keys(eqCounts || {}).length > 0 ||
@@ -631,6 +647,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setActiveContadorSession(validSess);
     setCountStartedBy(cStarted);
     setIsReportSent(repSent);
+    setRecontagemUnlocked(recUnlocked);
     setEmailSettings(branchEmailSettings);
     setServerEmailConfig(branchServerConfig);
     setRecipientsTextState(branchRecipients);
@@ -719,12 +736,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           localStorage.removeItem(getBranchStorageKey(b, 'count_started_by'));
           localStorage.removeItem(getBranchStorageKey(b, 'active_contador_session'));
           localStorage.setItem(getBranchStorageKey(b, 'is_report_sent'), JSON.stringify(false));
+          localStorage.setItem(getBranchStorageKey(b, 'recontagem_unlocked'), JSON.stringify(false));
 
           localStorage.setItem(getBranchStorageKey(b, 'calendar_day'), todayStr);
 
           const clearedStatus = {
             countStartedBy: null,
             isReportSent: false,
+            recontagemUnlocked: false,
             activeContadorSession: null,
             hasCounts: false,
           };
@@ -745,6 +764,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             setCountStartedBy(null);
             setActiveContadorSession(null);
             setIsReportSent(false);
+            setRecontagemUnlocked(false);
             setTodayKey(todayStr);
           }
         } else if (!storedDay) {
@@ -867,21 +887,52 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem(getBranchStorageKey(activeBranch, 'is_report_sent'), JSON.stringify(isReportSent));
   }, [isReportSent, activeBranch]);
 
+  useEffect(() => {
+    if (isSwitchingBranchRef.current) return;
+    localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_unlocked'), JSON.stringify(recontagemUnlocked));
+  }, [recontagemUnlocked, activeBranch]);
+
   // --- CONTROLE DE SINCRONIZAÇÃO COM O FIREBASE FIRESTORE ---
   // EXIGÊNCIA: A comunicação com o Firebase só ocorre:
   // 1. Automaticamente ao logar no app (atualizando dados das respectivas bases) e carga inicial no boot;
-  // 2. Para o usuário Master, apenas ao pressionar o botão "Sincronizar Dados" na tela Cadastros;
-  // 3. Para o usuário Contador, apenas após o envio do estoque por e-mail.
-  const [hasPendingMasterSync, setHasPendingMasterSync] = useState<boolean>(() => {
-    return localStorage.getItem('choppstock_pending_master_sync') === 'true';
+  // 2. Para o usuário Master, apenas ao pressionar o botão "Sincronizar Dados" na tela Cadastros (apenas da base ativa);
+  // 3. Para o usuário Contador, apenas após o envio do estoque/recontagem por e-mail.
+  const [pendingSyncPA, setPendingSyncPA] = useState<boolean>(() => {
+    return localStorage.getItem(getBranchStorageKey('PAULO AFONSO', 'pending_master_sync')) === 'true'
+      || localStorage.getItem('choppstock_pending_master_sync') === 'true';
   });
+  const [pendingSyncDEL, setPendingSyncDEL] = useState<boolean>(() => {
+    return localStorage.getItem(getBranchStorageKey('DELMIRO', 'pending_master_sync')) === 'true'
+      || localStorage.getItem('choppstock_pending_master_sync') === 'true';
+  });
+  const [pendingUsersSync, setPendingUsersSync] = useState<boolean>(() => {
+    return localStorage.getItem('choppstock_pending_users_sync') === 'true'
+      || localStorage.getItem('choppstock_pending_master_sync') === 'true';
+  });
+
+  const hasPendingMasterSync =
+    (activeBranch === 'PAULO AFONSO' ? pendingSyncPA : pendingSyncDEL) || pendingUsersSync;
+
   const [lastFirebaseSyncAt, setLastFirebaseSyncAt] = useState<string | null>(() => {
     return localStorage.getItem('choppstock_last_firebase_sync_at');
   });
 
-  const markMasterChangesPending = () => {
-    setHasPendingMasterSync(true);
-    localStorage.setItem('choppstock_pending_master_sync', 'true');
+  const markMasterChangesPending = (target?: UnitBranch | 'AMBAS' | 'USERS') => {
+    if (target === 'USERS') {
+      setPendingUsersSync(true);
+      localStorage.setItem('choppstock_pending_users_sync', 'true');
+      return;
+    }
+    const branchesToMark: UnitBranch[] =
+      target === 'AMBAS' ? ['PAULO AFONSO', 'DELMIRO'] : [target || activeBranchRef.current];
+    branchesToMark.forEach(b => {
+      localStorage.setItem(getBranchStorageKey(b, 'pending_master_sync'), 'true');
+      if (b === 'PAULO AFONSO') {
+        setPendingSyncPA(true);
+      } else {
+        setPendingSyncDEL(true);
+      }
+    });
   };
 
   const activeUserRef = useRef<StockUser | null>(activeUser);
@@ -914,6 +965,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const effCountStartedBy = isPreviousDay ? null : (remote.countStartedBy || null);
     const effIsReportSent = isPreviousDay ? false : !!remote.isReportSent;
+    const effRecUnlocked = isPreviousDay ? false : !!remote.recontagemUnlocked;
     const effMatCounts = isPreviousDay ? {} : (remote.materialCounts || {});
     const effEqCounts = isPreviousDay ? {} : (remote.equipmentCounts || {});
     const effUncat = isPreviousDay ? [] : (Array.isArray(remote.uncataloguedEquipments) ? remote.uncataloguedEquipments : []);
@@ -952,6 +1004,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const statusObj = {
       countStartedBy: effCountStartedBy,
       isReportSent: effIsReportSent,
+      recontagemUnlocked: effRecUnlocked,
       activeContadorSession: effSession,
       hasCounts,
     };
@@ -998,6 +1051,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem(getBranchStorageKey(branch, 'recontagem_material_counts'), JSON.stringify(effRecMat));
       localStorage.setItem(getBranchStorageKey(branch, 'recontagem_equipment_counts'), JSON.stringify(effRecEq));
       localStorage.setItem(getBranchStorageKey(branch, 'is_report_sent'), JSON.stringify(effIsReportSent));
+      localStorage.setItem(getBranchStorageKey(branch, 'recontagem_unlocked'), JSON.stringify(effRecUnlocked));
       localStorage.setItem(getBranchStorageKey(branch, 'calendar_day'), todayStr);
 
       if (effSession) {
@@ -1037,6 +1091,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setActiveContadorSession(effSession);
         setCountStartedBy(effCountStartedBy);
         setIsReportSent(effIsReportSent);
+        setRecontagemUnlocked(effRecUnlocked);
         setFrozenReportTextState(effFrozen);
         setTodayKey(todayStr);
       }
@@ -1187,6 +1242,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setActiveContadorSession(statusCur.activeContadorSession);
       setCountStartedBy(statusCur.countStartedBy);
       setIsReportSent(statusCur.isReportSent);
+      setRecontagemUnlocked(statusCur.recontagemUnlocked);
       setBranchStatusPA(readBranchInitialStatus('PAULO AFONSO'));
       setBranchStatusDEL(readBranchInitialStatus('DELMIRO'));
       const storedMaterials = localStorage.getItem(getBranchStorageKey(curBranch, 'materials'));
@@ -1301,6 +1357,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const updateBranchStatus = (prev: {
       countStartedBy: CountStartedBy | null;
       isReportSent: boolean;
+      recontagemUnlocked: boolean;
       activeContadorSession: ContadorSession | null;
       hasCounts: boolean;
     }) => ({
@@ -1336,6 +1393,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const emptyStatus = {
       countStartedBy: null,
       isReportSent: false,
+      recontagemUnlocked: false,
       activeContadorSession: null,
       hasCounts: false,
     };
@@ -1900,10 +1958,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setCountStartedBy(null);
     setActiveContadorSession(null);
     setIsReportSent(false);
+    setRecontagemUnlocked(false);
 
     const clearedStatus = {
       countStartedBy: null,
       isReportSent: false,
+      recontagemUnlocked: false,
       activeContadorSession: null,
       hasCounts: false,
     };
@@ -1922,6 +1982,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.removeItem(getBranchStorageKey(activeBranch, 'count_started_by'));
     localStorage.removeItem(getBranchStorageKey(activeBranch, 'active_contador_session'));
     localStorage.setItem(getBranchStorageKey(activeBranch, 'is_report_sent'), JSON.stringify(false));
+    localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_unlocked'), JSON.stringify(false));
 
     markMasterChangesPending();
     broadcastSync('COUNT_UPDATED');
@@ -1937,18 +1998,53 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
   };
 
+  // Helper para montar payload completo da base ativa no Firestore
+  const buildActiveBranchSyncPayload = (
+    targetBranch: UnitBranch,
+    overrides?: Partial<BranchSyncPayload>
+  ): Partial<BranchSyncPayload> => {
+    const todayStr = getTodayKey();
+    return {
+      branch: targetBranch,
+      materials,
+      freezers,
+      equipments,
+      materialCounts,
+      equipmentCounts,
+      uncataloguedEquipments,
+      lastCountBackup,
+      activeContadorSession,
+      countStartedBy,
+      isReportSent,
+      recontagemUnlocked,
+      countDate: todayStr,
+      frozenReportText,
+      recontagemSelectedIds,
+      recontagemMaterialCounts,
+      recontagemEquipmentCounts,
+      emailRecipients: recipientsText,
+      emailSettings,
+      serverEmailConfig,
+      updatedAt: new Date().toISOString(),
+      ...overrides,
+    };
+  };
+
   // Marca envio do estoque por e-mail para sincronizar todas as informações e liberar acesso total ao Master
   const markCountAsSent = async (targetBranchChoice?: UnitBranch): Promise<{ synced: boolean; message?: string }> => {
     const branchToMark = targetBranchChoice || activeBranch;
     const todayStr = getTodayKey();
     if (branchToMark === activeBranch) {
       setIsReportSent(true);
+      setRecontagemUnlocked(false);
       setActiveContadorSession(null);
       localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(true));
+      localStorage.setItem(getBranchStorageKey(branchToMark, 'recontagem_unlocked'), JSON.stringify(false));
       localStorage.removeItem(getBranchStorageKey(branchToMark, 'active_contador_session'));
       const sentStatus = {
         countStartedBy,
         isReportSent: true,
+        recontagemUnlocked: false,
         activeContadorSession: null,
         hasCounts: hasCurrentBranchCounts,
       };
@@ -1964,27 +2060,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     let synced = false;
     let errorMsg: string | undefined;
     try {
-      await pushBranchToFirestore(branchToMark, {
-        materials,
-        freezers,
-        equipments,
-        materialCounts,
-        equipmentCounts,
-        uncataloguedEquipments,
-        lastCountBackup,
+      await pushBranchToFirestore(branchToMark, buildActiveBranchSyncPayload(branchToMark, {
         activeContadorSession: null,
-        countStartedBy,
         isReportSent: true,
+        recontagemUnlocked: false,
         countDate: todayStr,
-        frozenReportText,
-        recontagemSelectedIds,
-        recontagemMaterialCounts,
-        recontagemEquipmentCounts,
-        emailRecipients: recipientsText,
-        emailSettings,
-        serverEmailConfig,
-        updatedAt: new Date().toISOString(),
-      });
+      }));
       const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       setLastFirebaseSyncAt(syncTime);
       localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
@@ -2008,7 +2089,183 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { synced, message: errorMsg };
   };
 
-  // --- SINCRONIZAÇÃO INTEGRAL MANUAL DO USUÁRIO MASTER (BOTÃO NA TELA CADASTROS) ---
+  // EXIGÊNCIA: Na tela Recontagem, do usuário Master, botão para liberação da recontagem ao contador inicial (em ambas as bases)
+  const releaseRecontagemForContador = async (): Promise<{ success: boolean; message: string }> => {
+    if (!isMaster) {
+      return { success: false, message: 'Apenas o usuário Master pode liberar a recontagem.' };
+    }
+    if (recontagemSelectedCount === 0) {
+      return { success: false, message: 'Selecione ao menos 1 item antes de liberar a recontagem para o contador.' };
+    }
+
+    const branchToRelease = activeBranchRef.current;
+    setRecontagemUnlocked(true);
+    localStorage.setItem(getBranchStorageKey(branchToRelease, 'recontagem_unlocked'), JSON.stringify(true));
+
+    const updateStatus = (prev: {
+      countStartedBy: CountStartedBy | null;
+      isReportSent: boolean;
+      recontagemUnlocked: boolean;
+      activeContadorSession: ContadorSession | null;
+      hasCounts: boolean;
+    }) => ({
+      ...prev,
+      recontagemUnlocked: true,
+    });
+    if (branchToRelease === 'PAULO AFONSO') {
+      setBranchStatusPA(updateStatus);
+    } else {
+      setBranchStatusDEL(updateStatus);
+    }
+
+    try {
+      await pushBranchToFirestore(
+        branchToRelease,
+        buildActiveBranchSyncPayload(branchToRelease, {
+          recontagemUnlocked: true,
+          activeContadorSession: null,
+        })
+      );
+      const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setLastFirebaseSyncAt(syncTime);
+      localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
+      broadcastSync('RECONTAGEM_UPDATED');
+
+      const initiatorLabel = countStartedBy
+        ? `${countStartedBy.userName} (Matrícula: ${countStartedBy.registration})`
+        : 'contador inicial da base';
+
+      addLog({
+        type: 'contagem',
+        targetType: 'contagem',
+        itemCode: 'RECOUNT-RELEASE',
+        title: `Recontagem Liberada [${branchToRelease}]`,
+        description: `Recontagem de ${recontagemSelectedCount} item(ns) liberada pelo Master e sincronizada para ${initiatorLabel}.`,
+      });
+
+      return {
+        success: true,
+        message: `Recontagem liberada e sincronizada para o contador inicial na base ${branchToRelease}!`,
+      };
+    } catch (err) {
+      console.warn('Erro ao liberar recontagem no Firestore:', err);
+      broadcastSync('RECONTAGEM_UPDATED');
+      return {
+        success: true,
+        message: isQuotaExceededError(err)
+          ? `Recontagem liberada localmente na base ${branchToRelease} (cota diária do Firebase atingida).`
+          : `Recontagem liberada localmente na base ${branchToRelease}, mas houve falha ao sincronizar com o Firebase.`,
+      };
+    }
+  };
+
+  const revokeRecontagemForContador = async (): Promise<{ success: boolean; message: string }> => {
+    if (!isMaster) {
+      return { success: false, message: 'Apenas o usuário Master pode bloquear a recontagem.' };
+    }
+    const branchToLock = activeBranchRef.current;
+    setRecontagemUnlocked(false);
+    localStorage.setItem(getBranchStorageKey(branchToLock, 'recontagem_unlocked'), JSON.stringify(false));
+
+    const updateStatus = (prev: {
+      countStartedBy: CountStartedBy | null;
+      isReportSent: boolean;
+      recontagemUnlocked: boolean;
+      activeContadorSession: ContadorSession | null;
+      hasCounts: boolean;
+    }) => ({
+      ...prev,
+      recontagemUnlocked: false,
+    });
+    if (branchToLock === 'PAULO AFONSO') {
+      setBranchStatusPA(updateStatus);
+    } else {
+      setBranchStatusDEL(updateStatus);
+    }
+
+    try {
+      await pushBranchToFirestore(
+        branchToLock,
+        buildActiveBranchSyncPayload(branchToLock, {
+          recontagemUnlocked: false,
+        })
+      );
+      const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setLastFirebaseSyncAt(syncTime);
+      localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
+      broadcastSync('RECONTAGEM_UPDATED');
+      return {
+        success: true,
+        message: `Liberação da recontagem bloqueada na base ${branchToLock}.`,
+      };
+    } catch {
+      broadcastSync('RECONTAGEM_UPDATED');
+      return {
+        success: true,
+        message: `Liberação da recontagem bloqueada localmente na base ${branchToLock}.`,
+      };
+    }
+  };
+
+  // Marca envio da recontagem por e-mail pelo Contador inicial e sincroniza resultados com Firestore
+  const markRecountAsSent = async (): Promise<{ synced: boolean; message?: string }> => {
+    const branchToMark = activeBranchRef.current;
+    setRecontagemUnlocked(false);
+    setActiveContadorSession(null);
+    localStorage.setItem(getBranchStorageKey(branchToMark, 'recontagem_unlocked'), JSON.stringify(false));
+    localStorage.removeItem(getBranchStorageKey(branchToMark, 'active_contador_session'));
+
+    const updateStatus = (prev: {
+      countStartedBy: CountStartedBy | null;
+      isReportSent: boolean;
+      recontagemUnlocked: boolean;
+      activeContadorSession: ContadorSession | null;
+      hasCounts: boolean;
+    }) => ({
+      ...prev,
+      recontagemUnlocked: false,
+      activeContadorSession: null,
+    });
+    if (branchToMark === 'PAULO AFONSO') {
+      setBranchStatusPA(updateStatus);
+    } else {
+      setBranchStatusDEL(updateStatus);
+    }
+
+    let synced = false;
+    let errorMsg: string | undefined;
+    try {
+      await pushBranchToFirestore(
+        branchToMark,
+        buildActiveBranchSyncPayload(branchToMark, {
+          recontagemUnlocked: false,
+          activeContadorSession: null,
+        })
+      );
+      const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setLastFirebaseSyncAt(syncTime);
+      localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
+      synced = true;
+    } catch (err) {
+      console.warn('Erro ao sincronizar envio da recontagem com o Firestore:', err);
+      errorMsg = isQuotaExceededError(err)
+        ? 'Limite diário de gravações gratuitas do Firebase atingido; a recontagem foi salva localmente.'
+        : 'Não foi possível sincronizar a recontagem com o Firebase agora, mas os dados foram salvos localmente.';
+    }
+
+    broadcastSync('RECONTAGEM_UPDATED');
+    addLog({
+      type: 'envio',
+      targetType: 'contagem',
+      itemCode: 'RECOUNT-EMAIL-SENT',
+      title: `Recontagem Enviada por E-mail [${branchToMark}]`,
+      description: `Relatório da recontagem enviado por e-mail na base ${branchToMark} e sincronizado com o Firebase.`,
+    });
+
+    return { synced, message: errorMsg };
+  };
+
+  // --- SINCRONIZAÇÃO MANUAL DO USUÁRIO MASTER (BOTÃO NA TELA CADASTROS - APENAS BASE LOGADA) ---
   const syncMasterDataToFirebase = async (): Promise<{ success: boolean; message: string }> => {
     if (!isMaster) {
       return { success: false, message: 'Apenas o usuário Master pode sincronizar os dados.' };
@@ -2017,90 +2274,29 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return { success: false, message: 'Existe contagem em andamento.' };
     }
 
-    const todayStr = getTodayKey();
-
-    const buildBranchSyncPayload = (b: UnitBranch): Partial<BranchSyncPayload> | null => {
-      if (b === activeBranchRef.current) {
-        return {
-          branch: b,
-          materials,
-          freezers,
-          equipments,
-          materialCounts,
-          equipmentCounts,
-          uncataloguedEquipments,
-          lastCountBackup,
-          activeContadorSession,
-          countStartedBy,
-          isReportSent,
-          countDate: todayStr,
-          frozenReportText,
-          recontagemSelectedIds,
-          recontagemMaterialCounts,
-          recontagemEquipmentCounts,
-          emailRecipients: recipientsText,
-          emailSettings,
-          serverEmailConfig,
-          updatedAt: new Date().toISOString(),
-        };
-      }
-
-      const hasLocalMaterials = localStorage.getItem(getBranchStorageKey(b, 'materials')) !== null;
-      const hasLocalFreezers = localStorage.getItem(getBranchStorageKey(b, 'freezers')) !== null;
-      const hasLocalEquipments = localStorage.getItem(getBranchStorageKey(b, 'equipments')) !== null;
-      if (!hasLocalMaterials && !hasLocalFreezers && !hasLocalEquipments) {
-        return null;
-      }
-
-      const readJson = <T,>(subKey: string, fallback: T): T => {
-        try {
-          const raw = localStorage.getItem(getBranchStorageKey(b, subKey));
-          return raw ? JSON.parse(raw) : fallback;
-        } catch {
-          return fallback;
-        }
-      };
-
-      const storedDay = localStorage.getItem(getBranchStorageKey(b, 'calendar_day')) || todayStr;
-      const isSameDay = storedDay === todayStr;
-
-      return {
-        branch: b,
-        materials: readJson<MaterialItem[]>('materials', []),
-        freezers: readJson<FreezerItem[]>('freezers', []),
-        equipments: readJson<EquipmentItem[]>('equipments', []),
-        materialCounts: isSameDay ? readJson<Record<string, MaterialDailyEntry>>('today_materials', {}) : {},
-        equipmentCounts: isSameDay ? readJson<Record<string, EquipmentDailyEntry>>('today_equipments', {}) : {},
-        uncataloguedEquipments: isSameDay ? readJson<UncataloguedEquipment[]>('today_uncatalogued', []) : [],
-        lastCountBackup: readJson<LastCountBackup | null>('last_count_backup', null),
-        activeContadorSession: isSameDay ? readJson<ContadorSession | null>('active_contador_session', null) : null,
-        countStartedBy: isSameDay ? readJson<CountStartedBy | null>('count_started_by', null) : null,
-        isReportSent: isSameDay ? readJson<boolean>('is_report_sent', false) : false,
-        countDate: todayStr,
-        frozenReportText: localStorage.getItem(getBranchStorageKey(b, 'frozen_report')),
-        recontagemSelectedIds: isSameDay ? readJson<Record<string, boolean>>('recontagem_selected_ids', {}) : {},
-        recontagemMaterialCounts: isSameDay ? readJson<Record<string, MaterialDailyEntry>>('recontagem_material_counts', {}) : {},
-        recontagemEquipmentCounts: isSameDay ? readJson<Record<string, EquipmentDailyEntry>>('recontagem_equipment_counts', {}) : {},
-        emailRecipients: localStorage.getItem(getBranchStorageKey(b, 'recipients_text')) ?? '',
-        emailSettings: readJson<EmailSettings>('email_settings', INITIAL_EMAIL_SETTINGS),
-        serverEmailConfig: readJson<ServerEmailConfig>('server_email_config', INITIAL_SERVER_EMAIL_CONFIG),
-        updatedAt: new Date().toISOString(),
-      };
-    };
+    const targetBranch = activeBranchRef.current;
 
     try {
-      const payloadPA = buildBranchSyncPayload('PAULO AFONSO');
-      const payloadDEL = buildBranchSyncPayload('DELMIRO');
-
-      const tasks: Promise<void>[] = [pushUsersToFirestore(users)];
-      if (payloadPA) tasks.push(pushBranchToFirestore('PAULO AFONSO', payloadPA));
-      if (payloadDEL) tasks.push(pushBranchToFirestore('DELMIRO', payloadDEL));
+      const payload = buildActiveBranchSyncPayload(targetBranch);
+      const tasks: Promise<void>[] = [pushBranchToFirestore(targetBranch, payload)];
+      if (pendingUsersSync) {
+        tasks.push(pushUsersToFirestore(users));
+      }
 
       await Promise.all(tasks);
 
       const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      setHasPendingMasterSync(false);
+      localStorage.removeItem(getBranchStorageKey(targetBranch, 'pending_master_sync'));
       localStorage.removeItem('choppstock_pending_master_sync');
+      if (targetBranch === 'PAULO AFONSO') {
+        setPendingSyncPA(false);
+      } else {
+        setPendingSyncDEL(false);
+      }
+      if (pendingUsersSync) {
+        setPendingUsersSync(false);
+        localStorage.removeItem('choppstock_pending_users_sync');
+      }
       setLastFirebaseSyncAt(syncTime);
       localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
 
@@ -2108,13 +2304,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         type: 'inclusao',
         targetType: 'contagem',
         itemCode: 'FIREBASE-SYNC',
-        title: 'Sincronização Integral com Firebase Realizada pelo Master',
-        description: `Bases PAULO AFONSO, DELMIRO e Usuários sincronizados com o Firestore às ${syncTime}.`
+        title: `Sincronização da Base [${targetBranch}] Realizada pelo Master`,
+        description: `Dados da base ${targetBranch}${pendingUsersSync ? ' e Usuários' : ''} sincronizados com o Firestore às ${syncTime}.`
       });
 
       return {
         success: true,
-        message: 'Dados das bases (PAULO AFONSO e DELMIRO) e usuários sincronizados integralmente com o Firebase!'
+        message: `Dados da base ${targetBranch} sincronizados com o Firebase!`
       };
     } catch (error) {
       console.error('Erro na sincronização manual Master:', error);
@@ -2126,7 +2322,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
       return {
         success: false,
-        message: 'Erro ao sincronizar dados com o Firebase. Verifique sua conexão e tente novamente.'
+        message: `Erro ao sincronizar dados da base ${targetBranch} com o Firebase. Verifique sua conexão e tente novamente.`
       };
     }
   };
@@ -2200,6 +2396,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const evaluateBranchStatus = (b: UnitBranch, remote: BranchSyncPayload | null) => {
       let remoteStarted: CountStartedBy | null = null;
       let remoteReportSent = false;
+      let remoteRecontagemUnlocked = false;
       let remoteSession: ContadorSession | null = null;
       let remoteHasCounts = false;
 
@@ -2209,6 +2406,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (!isPrevDay) {
           remoteStarted = remote.countStartedBy || null;
           remoteReportSent = !!remote.isReportSent;
+          remoteRecontagemUnlocked = !!remote.recontagemUnlocked;
           remoteSession = remote.activeContadorSession || null;
           remoteHasCounts = Boolean(
             (remote.materialCounts && Object.values(remote.materialCounts).some(hasMaterialEntryQuantity)) ||
@@ -2220,6 +2418,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       let localStarted: CountStartedBy | null = null;
       let localReportSent = false;
+      let localRecontagemUnlocked = false;
       let localSession: ContadorSession | null = null;
       let localHasCounts = false;
       let localHasUnsentCounts = false;
@@ -2232,6 +2431,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           if (sStarted) localStarted = JSON.parse(sStarted);
           const sSent = localStorage.getItem(getBranchStorageKey(b, 'is_report_sent'));
           if (sSent) localReportSent = JSON.parse(sSent);
+          const sRecUnlocked = localStorage.getItem(getBranchStorageKey(b, 'recontagem_unlocked'));
+          if (sRecUnlocked) localRecontagemUnlocked = JSON.parse(sRecUnlocked);
           const sSess = localStorage.getItem(getBranchStorageKey(b, 'active_contador_session'));
           if (sSess) localSession = JSON.parse(sSess);
           const sMat = localStorage.getItem(getBranchStorageKey(b, 'today_materials'));
@@ -2254,12 +2455,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         ? (remoteStarted || (!remoteReportSent && localHasUnsentCounts ? localStarted : null))
         : localStarted;
       const isReportSentVal = remote !== null ? remoteReportSent : localReportSent;
+      const recontagemUnlockedVal = remote !== null ? remoteRecontagemUnlocked : localRecontagemUnlocked;
       const hasCountsVal = remote !== null
         ? (remoteHasCounts || (!remoteReportSent && localHasUnsentCounts))
         : localHasCounts;
 
       // A contagem só é considerada iniciada quando houver pelo menos 1 quantidade/item inserido
-      const countStartedByVal = hasCountsVal ? rawCountStartedBy : null;
+      const countStartedByVal = (hasCountsVal || isReportSentVal) ? rawCountStartedBy : null;
       const activeSessionVal = (isReportSentVal || !hasCountsVal || !countStartedByVal)
         ? null
         : (remote !== null
@@ -2272,6 +2474,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return {
         countStartedBy: countStartedByVal,
         isReportSent: isReportSentVal,
+        recontagemUnlocked: recontagemUnlockedVal,
         activeSession: activeSessionVal,
         hasCounts: hasCountsVal,
         isCountInProgress: isCountInProgressVal,
@@ -2296,14 +2499,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (user.roleLevel === 'contador') {
       const targetStatus = targetBranch === 'PAULO AFONSO' ? statusPA : statusDEL;
 
-      // EXIGÊNCIA: Somente após o envio do estoque por e-mail pelo usuário contador é que o acesso é liberado para o Master.
-      // Os demais usuários contadores ainda não poderão logar no app, nas duas bases.
-      // Somente após as contagens serem zeradas pelo usuário Master, ou mudar o dia é que os demais contadores poderão logar e iniciar uma nova contagem.
+      // EXIGÊNCIA: Após o envio do estoque por e-mail, apenas se a recontagem tiver sido liberada pelo Master
+      // o contador inicial poderá logar novamente para realizar a recontagem dos itens selecionados.
       if (targetStatus.isReportSent) {
-        return {
-          success: false,
-          message: 'Existe contagem em andamento.'
-        };
+        if (!targetStatus.recontagemUnlocked) {
+          return {
+            success: false,
+            message: 'Existe contagem em andamento.'
+          };
+        }
+
+        if (targetStatus.countStartedBy) {
+          const isInitiator = targetStatus.countStartedBy.userId === user.id ||
+            (targetStatus.countStartedBy.registration && targetStatus.countStartedBy.registration.toUpperCase() === cleanReg);
+          if (!isInitiator) {
+            return {
+              success: false,
+              message: 'Existe contagem em andamento.'
+            };
+          }
+        }
       }
 
       // EXIGÊNCIA: Somente o contador que iniciou a contagem (inseriu a primeira quantidade) poderá logar no app e dar continuidade à contagem iniciada no dia.
@@ -2400,8 +2615,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     const syncTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setHasPendingMasterSync(false);
     localStorage.removeItem('choppstock_pending_master_sync');
+    if (user.roleLevel === 'master') {
+      setPendingSyncPA(false);
+      setPendingSyncDEL(false);
+      setPendingUsersSync(false);
+      localStorage.removeItem(getBranchStorageKey('PAULO AFONSO', 'pending_master_sync'));
+      localStorage.removeItem(getBranchStorageKey('DELMIRO', 'pending_master_sync'));
+      localStorage.removeItem('choppstock_pending_users_sync');
+    } else {
+      localStorage.removeItem(getBranchStorageKey(targetBranch, 'pending_master_sync'));
+      if (targetBranch === 'PAULO AFONSO') {
+        setPendingSyncPA(false);
+      } else {
+        setPendingSyncDEL(false);
+      }
+    }
     setLastFirebaseSyncAt(syncTime);
     localStorage.setItem('choppstock_last_firebase_sync_at', syncTime);
 
@@ -2787,7 +3016,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setUsers(prev => {
       const updated = [newUser, ...prev];
       localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(updated));
-      if (isMaster) markMasterChangesPending();
+      if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
       return updated;
     });
@@ -2806,7 +3035,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setUsers(prev => {
       const updated = prev.map(u => u.id === updatedUser.id ? updatedUser : u);
       localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(updated));
-      if (isMaster) markMasterChangesPending();
+      if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
       return updated;
     });
@@ -2832,7 +3061,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setUsers(prev => {
       const updated = prev.filter(u => u.id !== id);
       localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(updated));
-      if (isMaster) markMasterChangesPending();
+      if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
       return updated;
     });
@@ -3060,7 +3289,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem(getBranchStorageKey(branchToUse, 'materials'), JSON.stringify(finalMaterials));
     localStorage.setItem(getBranchStorageKey(branchToUse, 'freezers'), JSON.stringify(finalFreezers));
     localStorage.setItem(getBranchStorageKey(branchToUse, 'equipments'), JSON.stringify(finalEquipments));
-    if (isMaster) markMasterChangesPending();
+    if (isMaster) markMasterChangesPending(branchToUse);
     broadcastSync('BASE_UPDATED');
 
     const mCount = incomingMaterials.length;
@@ -3182,7 +3411,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       description: `Cadastro de ${stockLabel} zerado na base ${branchLabel}.`,
     });
 
-    if (isMaster) markMasterChangesPending();
+    if (isMaster) markMasterChangesPending(branchTarget);
     broadcastSync('BASE_UPDATED');
   };
 
@@ -3356,38 +3585,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
   };
 
-  // Total de itens selecionados e que de fato possuem contagem inserida hoje
+  // Total de itens selecionados para recontagem (inclui contados e demais itens não contados selecionados)
   const recontagemSelectedCount = useMemo(() => {
     let count = 0;
     materials.forEach(m => {
-      const c = materialCounts[m.id];
-      const hasCount = c && (
-        (c.disponivel || 0) > 0 ||
-        (c.danificado || 0) > 0 ||
-        (c.barrilCheio || 0) > 0 ||
-        (c.barrilVazio || 0) > 0 ||
-        (c.barrilEmRota || 0) > 0 ||
-        (c.co2Cheio || 0) > 0 ||
-        (c.co2Mexido || 0) > 0 ||
-        (c.co2Vazio || 0) > 0 ||
-        (c.co2EmRota || 0) > 0
-      );
-      if (recontagemSelectedIds[m.id] && hasCount) {
+      if (recontagemSelectedIds[m.id]) {
         count++;
       }
     });
     freezers.forEach(f => {
-      if (recontagemSelectedIds[f.id] && equipmentCounts[f.id]?.status) {
+      if (recontagemSelectedIds[f.id]) {
         count++;
       }
     });
     equipments.forEach(eq => {
-      if (recontagemSelectedIds[eq.id] && equipmentCounts[eq.id]?.status) {
+      if (recontagemSelectedIds[eq.id]) {
         count++;
       }
     });
     return count;
-  }, [materials, freezers, equipments, recontagemSelectedIds, materialCounts, equipmentCounts]);
+  }, [materials, freezers, equipments, recontagemSelectedIds]);
 
   return (
     <InventoryContext.Provider
@@ -3409,11 +3626,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         clearContadorSession,
         countStartedBy,
         isReportSent,
+        recontagemUnlocked,
         isCountInProgress,
         isAnyBaseCountInProgress,
         canActiveUserCount,
         cantCountReason,
         markCountAsSent,
+        releaseRecontagemForContador,
+        revokeRecontagemForContador,
+        markRecountAsSent,
         syncMasterDataToFirebase,
         hasPendingMasterSync,
         lastFirebaseSyncAt,

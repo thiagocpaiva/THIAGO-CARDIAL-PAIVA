@@ -22,7 +22,7 @@ import {
   MapPin
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
-import { MaterialItem, FreezerItem, EquipmentItem, UnitBranch } from '../../types/inventory';
+import { MaterialItem, FreezerItem, EquipmentItem, UnitBranch, getSelectableBranches, getBranchFileSlug, toTestBranch } from '../../types/inventory';
 import { CATEGORIAS_MATERIAIS } from '../modals/CadastrarMaterialModal';
 
 interface GestaoCadastrosViewProps {
@@ -78,6 +78,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
     clearSelectedData,
     importBaseItems,
     isMaster,
+    isCoringa,
     isContadorActive,
     isAnyBaseCountInProgress,
     activeBranch,
@@ -85,6 +86,8 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
     hasPendingMasterSync,
     lastFirebaseSyncAt,
   } = useInventory();
+
+  const selectableBranches = getSelectableBranches(isCoringa);
 
   const [isSyncingFirebase, setIsSyncingFirebase] = useState(false);
 
@@ -150,7 +153,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
    */
   const handleDownloadMaterialsTemplate = (branchParam?: UnitBranch) => {
     const branchToUse = branchParam || targetDownloadBranch || activeBranch;
-    const branchCode = branchToUse === 'PAULO AFONSO' ? 'PAULO_AFONSO' : 'DELMIRO';
+    const branchCode = getBranchFileSlug(branchToUse);
     const header = 'BASE;TIPO;CODIGO;NOME;CATEGORIA;SUBOPCAO;UNIDADE_MEDIDA\n';
     const sampleRows = [
       `${branchToUse};material;MAT-001;Mesa Plastica Branca;mesa_plastica;DEVASSA AMARELA;UN`,
@@ -182,7 +185,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
     // EXIGÊNCIA: Movimentar a coluna "TIPO", do arquivo exportado do estoque de equipamentos, e colocar após a coluna "MODELO"
     // EXIGÊNCIA: inserir tanto arquivo a baixar, quanto no arquivo a exportar do estoque de Equipamentos, a coluna "OBS"
     const branchToUse = branchParam || targetDownloadBranch || activeBranch;
-    const branchCode = branchToUse === 'PAULO AFONSO' ? 'PAULO_AFONSO' : 'DELMIRO';
+    const branchCode = getBranchFileSlug(branchToUse);
     const header = 'BASE;CODIGO;PATRIMONIO;NOME;MARCA;MODELO;TIPO;IDT;VOLTAGEM;DEFEITOS_DOS_EQUIPAMENTOS;OBS\n';
     const sampleRows = [
       `${branchToUse};FRZ-101;PAT-100234;Freezer Horizontal 4 Caixas SLIM;NOVA SCHIN;4 CAIXAS;SLIM;PORTA CEGA;220V;Sem motor;Localizado no galpão B`,
@@ -240,7 +243,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
   const handleExportStockSelection = (stockChoice: 'materiais' | 'equipamentos' | 'ambos') => {
     setIsExportStockModalOpen(false);
     const todayStr = new Date().toISOString().slice(0, 10);
-    const branchCode = activeBranch === 'PAULO AFONSO' ? 'PAULO_AFONSO' : 'DELMIRO';
+    const branchCode = getBranchFileSlug(activeBranch);
 
     // EXIGÊNCIA: caso os cadastros estejam zerados ou vazios, não baixar o arquivo e "Cadastro sem informações a baixar."
     if (stockChoice === 'materiais') {
@@ -382,8 +385,8 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               }
               const cleanBase = itemBaseRaw.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z]/g, '');
               let itemBranch: UnitBranch | null = null;
-              if (cleanBase.includes('PAULO') || cleanBase.includes('AFONSO')) itemBranch = 'PAULO AFONSO';
-              else if (cleanBase.includes('DELMIRO') || cleanBase.includes('GOUVEIA')) itemBranch = 'DELMIRO';
+              if (cleanBase.includes('PAULO') || cleanBase.includes('AFONSO')) itemBranch = isCoringa ? toTestBranch('PAULO AFONSO') : 'PAULO AFONSO';
+              else if (cleanBase.includes('DELMIRO') || cleanBase.includes('GOUVEIA')) itemBranch = isCoringa ? toTestBranch('DELMIRO') : 'DELMIRO';
 
               if (!itemBranch || itemBranch !== targetImportBranch) {
                 errors.push({
@@ -543,8 +546,8 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               } else {
                 const cleanBase = baseRaw.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z]/g, '');
                 let itemBranch: UnitBranch | null = null;
-                if (cleanBase.includes('PAULO') || cleanBase.includes('AFONSO')) itemBranch = 'PAULO AFONSO';
-                else if (cleanBase.includes('DELMIRO') || cleanBase.includes('GOUVEIA')) itemBranch = 'DELMIRO';
+                if (cleanBase.includes('PAULO') || cleanBase.includes('AFONSO')) itemBranch = isCoringa ? toTestBranch('PAULO AFONSO') : 'PAULO AFONSO';
+                else if (cleanBase.includes('DELMIRO') || cleanBase.includes('GOUVEIA')) itemBranch = isCoringa ? toTestBranch('DELMIRO') : 'DELMIRO';
 
                 if (!itemBranch || itemBranch !== targetImportBranch) {
                   errors.push({
@@ -1209,7 +1212,11 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
             </h2>
             {isMaster && (
               <p className="text-[11px] font-semibold mt-0.5">
-                {hasPendingMasterSync ? (
+                {isCoringa ? (
+                  <span className="text-indigo-700">
+                    Modo Teste (CORINGA): alterações salvas somente localmente na base {activeBranch} (sem envio ao Firebase).
+                  </span>
+                ) : hasPendingMasterSync ? (
                   <span className="text-amber-700">
                     Alterações locais pendentes na base {activeBranch} — clique em &quot;Sincronizar Dados&quot; para enviar ao Firebase.
                   </span>
@@ -1312,28 +1319,22 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                 <span>Base de Destino:</span>
               </span>
               <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setClearBranchTarget('PAULO AFONSO')}
-                  className={`p-2 rounded-xl border text-[11px] font-black transition-all cursor-pointer ${
-                    clearBranchTarget === 'PAULO AFONSO'
-                      ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  PAULO AFONSO
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setClearBranchTarget('DELMIRO')}
-                  className={`p-2 rounded-xl border text-[11px] font-black transition-all cursor-pointer ${
-                    clearBranchTarget === 'DELMIRO'
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs ring-2 ring-slate-400'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  DELMIRO
-                </button>
+                {selectableBranches.map((branchOpt, idx) => (
+                  <button
+                    key={branchOpt}
+                    type="button"
+                    onClick={() => setClearBranchTarget(branchOpt)}
+                    className={`p-2 rounded-xl border text-[11px] font-black transition-all cursor-pointer ${
+                      clearBranchTarget === branchOpt
+                        ? idx === 0
+                          ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300'
+                          : 'bg-slate-900 text-white border-slate-900 shadow-xs ring-2 ring-slate-400'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    {branchOpt}
+                  </button>
+                ))}
                 <button
                   type="button"
                   onClick={() => setClearBranchTarget('AMBAS')}
@@ -1427,9 +1428,15 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               </strong>{' '}
               na base{' '}
               <strong>
-                {clearBranchTarget === 'AMBAS' ? 'PAULO AFONSO e DELMIRO' : clearBranchTarget}
+                {clearBranchTarget === 'AMBAS' ? selectableBranches.join(' e ') : clearBranchTarget}
               </strong>
-              . Após confirmar, clique em <strong>"Sincronizar Dados"</strong> para atualizar o Firebase.
+              {isCoringa ? (
+                <> (somente nas bases de teste locais, sem alterar o Firebase).</>
+              ) : (
+                <>
+                  . Após confirmar, clique em <strong>&quot;Sincronizar Dados&quot;</strong> para atualizar o Firebase.
+                </>
+              )}
             </div>
 
             <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
@@ -1452,7 +1459,7 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                         ? 'de Equipamentos'
                         : 'de Materiais e Equipamentos';
                   const branchText =
-                    clearBranchTarget === 'AMBAS' ? 'PAULO AFONSO e DELMIRO' : clearBranchTarget;
+                    clearBranchTarget === 'AMBAS' ? selectableBranches.join(' e ') : clearBranchTarget;
                   showToast(`Cadastro ${stockText} zerado na base ${branchText}.`);
                 }}
                 className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl cursor-pointer shadow-xs"
@@ -1577,30 +1584,23 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTargetDownloadBranch('PAULO AFONSO')}
-                  className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    targetDownloadBranch === 'PAULO AFONSO'
-                      ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>PAULO AFONSO</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTargetDownloadBranch('DELMIRO')}
-                  className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    targetDownloadBranch === 'DELMIRO'
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs ring-2 ring-slate-400'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>DELMIRO</span>
-                </button>
+                {selectableBranches.map((branchOpt, idx) => (
+                  <button
+                    key={branchOpt}
+                    type="button"
+                    onClick={() => setTargetDownloadBranch(branchOpt)}
+                    className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      targetDownloadBranch === branchOpt
+                        ? idx === 0
+                          ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300'
+                          : 'bg-slate-900 text-white border-slate-900 shadow-xs ring-2 ring-slate-400'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    <span>{branchOpt}</span>
+                  </button>
+                ))}
               </div>
               <p className="text-[11px] text-slate-600 leading-tight">
                 O arquivo baixado conterá a coluna <strong>BASE</strong> preenchida com <strong>{targetDownloadBranch}</strong>. Ao importar, o app validará se a coluna BASE coincide com a seleção feita no momento da importação.
@@ -1722,30 +1722,23 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTargetImportBranch('PAULO AFONSO')}
-                  className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    targetImportBranch === 'PAULO AFONSO'
-                      ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>PAULO AFONSO</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTargetImportBranch('DELMIRO')}
-                  className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                    targetImportBranch === 'DELMIRO'
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs ring-2 ring-slate-400'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>DELMIRO</span>
-                </button>
+                {selectableBranches.map((branchOpt, idx) => (
+                  <button
+                    key={branchOpt}
+                    type="button"
+                    onClick={() => setTargetImportBranch(branchOpt)}
+                    className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      targetImportBranch === branchOpt
+                        ? idx === 0
+                          ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs ring-2 ring-amber-300'
+                          : 'bg-slate-900 text-white border-slate-900 shadow-xs ring-2 ring-slate-400'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    <span>{branchOpt}</span>
+                  </button>
+                ))}
               </div>
 
               <div className="p-2 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-950 leading-snug font-medium flex items-start gap-1.5">

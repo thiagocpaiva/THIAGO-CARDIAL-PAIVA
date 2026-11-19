@@ -4,10 +4,10 @@ import { Lock, User, Eye, EyeOff, CheckCircle2, AlertCircle, ArrowRight, ShieldC
 import { useInventory } from '../../context/InventoryContext';
 import { AppBrandIcon } from '../AppBrandIcons';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
-import { UnitBranch } from '../../types/inventory';
+import { UnitBranch, isCoringaUser } from '../../types/inventory';
 
 export const LoginView: React.FC = () => {
-  const { users, login } = useInventory();
+  const { users, verifyCredentials, login } = useInventory();
 
   const [registration, setRegistration] = useState('');
   const [password, setPassword] = useState('');
@@ -24,6 +24,7 @@ export const LoginView: React.FC = () => {
     : null;
 
   const isMasterUser = matchedUser?.roleLevel === 'master';
+  const isCoringaMatch = isCoringaUser(matchedUser);
 
   // Na tela de login, ao digitar a matricula e for de um usuário master, o cursor já irá ficar no campo da senha aguardando a digitação
   useEffect(() => {
@@ -45,41 +46,32 @@ export const LoginView: React.FC = () => {
       return;
     }
 
-    // EXIGÊNCIA: Se for Master já identificado localmente, solicita senha antes da escolha da base;
-    // a validação final de senha, status e matrícula ocorre sempre contra os dados do Firebase dentro de login().
-    if (matchedUser) {
-      if (matchedUser.status !== 'ativo') {
-        // Permite revalidar no Firestore em caso de reativação recente antes de bloquear
-        setIsLoggingIn(true);
-        try {
-          const checkResult = await login(cleanReg, password);
-          if (!checkResult.success) {
-            setErrorMessage(checkResult.message || 'Usuário inativo. Contate o Administrador Master.');
-          }
-        } finally {
-          setIsLoggingIn(false);
-        }
+    if (isMasterUser && !password.trim()) {
+      setErrorMessage('Por favor, digite a senha de acesso do Usuário Master.');
+      passwordInputRef.current?.focus();
+      return;
+    }
+
+    // Valida matrícula, status e senha (inclusive contra o Firebase) NA TELA DE LOGIN antes de avançar para seleção de base
+    setIsLoggingIn(true);
+    try {
+      const check = await verifyCredentials(cleanReg, password);
+      if (!check.success || !check.user) {
+        setErrorMessage(check.message || 'Erro ao validar credenciais.');
         return;
       }
 
-      if (isMasterUser) {
-        if (!password.trim()) {
-          setErrorMessage('Por favor, digite a senha de acesso do Usuário Master.');
-          return;
-        }
+      if (check.user.roleLevel === 'master') {
         setPendingMaster({
           registration: cleanReg,
           pass: password.trim(),
-          name: matchedUser.name,
+          name: check.user.name,
         });
         return;
       }
-    }
 
-    // Usuário Contador (ou matrícula recém-criada em outro dispositivo) sincroniza e autentica diretamente via Firebase
-    setIsLoggingIn(true);
-    try {
-      const result = await login(cleanReg, password);
+      // Usuário Contador autentica e sincroniza diretamente
+      const result = await login(cleanReg, password, undefined, true);
       if (!result.success) {
         setErrorMessage(result.message || 'Erro ao realizar login.');
       }
@@ -90,12 +82,17 @@ export const LoginView: React.FC = () => {
 
   const handleSelectBranch = async (branch: UnitBranch) => {
     if (!pendingMaster || isLoggingIn) return;
+    setErrorMessage('');
     setIsLoggingIn(true);
     try {
       const result = await login(pendingMaster.registration, pendingMaster.pass, branch);
       if (!result.success) {
-        setErrorMessage(result.message || 'Erro ao realizar login.');
-        setPendingMaster(null);
+        const msg = result.message || 'Erro ao realizar login.';
+        setErrorMessage(msg);
+        // Se for erro de credencial/status retorna ao login; se for bloqueio de uma base específica permite escolher a outra base
+        if (!msg.includes('contagem em andamento')) {
+          setPendingMaster(null);
+        }
       }
     } finally {
       setIsLoggingIn(false);
@@ -136,6 +133,13 @@ export const LoginView: React.FC = () => {
               </p>
             </div>
 
+            {errorMessage && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 text-xs flex items-center gap-2 animate-in fade-in duration-150">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
+
             <div className="space-y-3">
               <button
                 type="button"
@@ -174,6 +178,7 @@ export const LoginView: React.FC = () => {
                 onClick={() => {
                   setPendingMaster(null);
                   setPassword('');
+                  setErrorMessage('');
                 }}
                 className="text-xs text-slate-500 hover:text-slate-800 font-bold cursor-pointer"
               >
@@ -243,9 +248,11 @@ export const LoginView: React.FC = () => {
                 {/* Nome do usuário identificado */}
                 {matchedUser ? (
                   <span className={`text-[11px] font-bold flex items-center gap-1 px-2.5 py-0.5 rounded-full border truncate max-w-[170px] ${
-                    isMasterUser 
-                      ? 'bg-purple-50 text-purple-700 border-purple-200'
-                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    isCoringaMatch
+                      ? 'bg-amber-50 text-amber-900 border-amber-300'
+                      : isMasterUser 
+                        ? 'bg-purple-50 text-purple-700 border-purple-200'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
                   }`} title={matchedUser.name}>
                     <CheckCircle2 className="w-3 h-3 shrink-0" />
                     <span className="truncate">{matchedUser.name}</span>
@@ -280,11 +287,17 @@ export const LoginView: React.FC = () => {
                 <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-600 pl-1">
                   <span>Nível:</span>
                   <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
-                    isMasterUser 
-                      ? 'bg-purple-100 text-purple-800'
-                      : 'bg-emerald-100 text-emerald-800'
+                    isCoringaMatch
+                      ? 'bg-amber-100 text-amber-950'
+                      : isMasterUser 
+                        ? 'bg-purple-100 text-purple-800'
+                        : 'bg-emerald-100 text-emerald-800'
                   }`}>
-                    {isMasterUser ? '1 - Master (Exige Senha)' : '2 - Contador (Acesso Direto sem Senha)'}
+                    {isCoringaMatch
+                      ? '2 - Contador (Modo Teste Total • Sem Firebase)'
+                      : isMasterUser
+                        ? '1 - Master (Exige Senha)'
+                        : '2 - Contador (Acesso Direto sem Senha)'}
                   </span>
                 </div>
               )}
@@ -329,7 +342,13 @@ export const LoginView: React.FC = () => {
               disabled={isLoggingIn}
               className="w-full py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-60 text-slate-950 font-black text-sm rounded-2xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-2 cursor-pointer"
             >
-              <span>{isLoggingIn ? 'Sincronizando e entrando...' : (matchedUser && !isMasterUser ? 'Acessar como Contador' : 'Entrar no Sistema')}</span>
+              <span>
+                {isLoggingIn
+                  ? (isCoringaMatch ? 'Abrindo Modo Teste...' : 'Sincronizando e entrando...')
+                  : isCoringaMatch
+                    ? 'Acessar Modo Teste (Coringa)'
+                    : (matchedUser && !isMasterUser ? 'Acessar como Contador' : 'Entrar no Sistema')}
+              </span>
               <ArrowRight className="w-4 h-4 stroke-[3]" />
             </button>
 

@@ -22,7 +22,9 @@ import {
   EmailSettings,
   ServerEmailConfig,
   StockUser, 
-  UnitBranch 
+  UnitBranch,
+  isTestBranch,
+  isCoringaUser
 } from '../types/inventory';
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -138,6 +140,9 @@ export const getBranchDocId = (branch: UnitBranch): string => {
  * Busca dados da base diretamente no servidor Firestore (sem manter listener contínuo)
  */
 export async function fetchBranchData(branch: UnitBranch): Promise<BranchSyncPayload | null> {
+  if (isTestBranch(branch)) {
+    return null;
+  }
   const docId = getBranchDocId(branch);
   const docRef = doc(db, 'branches', docId);
   try {
@@ -202,6 +207,9 @@ export function subscribeToBranch(
   onError?: (error: unknown) => void,
   onInitialEmpty?: () => void
 ) {
+  if (isTestBranch(branch)) {
+    return () => {};
+  }
   const docId = getBranchDocId(branch);
   const path = `branches/${docId}`;
   const docRef = doc(db, 'branches', docId);
@@ -268,6 +276,9 @@ export function isQuotaExceededError(error: unknown): boolean {
 
 // Salva dados da base no Firestore, limpando recursivamente valores undefined
 export async function pushBranchToFirestore(branch: UnitBranch, payload: Partial<BranchSyncPayload>): Promise<void> {
+  if (isTestBranch(branch)) {
+    return;
+  }
   const docId = getBranchDocId(branch);
   const path = `branches/${docId}`;
   try {
@@ -292,12 +303,13 @@ export async function pushBranchToFirestore(branch: UnitBranch, payload: Partial
   }
 }
 
-// Salva usuários no Firestore, limpando recursivamente valores undefined
+// Salva usuários no Firestore, limpando recursivamente valores undefined (nunca envia usuário teste CORINGA)
 export async function pushUsersToFirestore(users: StockUser[]): Promise<void> {
   const path = 'appConfig/users';
   try {
     const docRef = doc(db, 'appConfig', 'users');
-    const cleanedUsers = removeUndefinedDeep(users);
+    const productionUsers = users.filter(u => !isCoringaUser(u));
+    const cleanedUsers = removeUndefinedDeep(productionUsers);
     await setDoc(docRef, {
       id: 'users',
       users: cleanedUsers,

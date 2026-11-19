@@ -35,9 +35,10 @@ import {
   generateStockReportText,
   generateStockReportHtml,
   generateStockReportEmailTableText,
+  preloadGrupoMsLogoDataUrl,
 } from '../../utils/reportGenerator';
 import { sendEmailDirectly, SendEmailResult, inferServerConfig, testServerCommunication } from '../../utils/emailSender';
-import { MaterialItem, FreezerItem, EquipmentItem, ServerEmailConfig } from '../../types/inventory';
+import { MaterialItem, FreezerItem, EquipmentItem, ServerEmailConfig, getBranchFileSlug } from '../../types/inventory';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
 
 type ExportChannel = 'email' | 'whatsapp' | 'pdf' | 'copy';
@@ -100,6 +101,10 @@ export const OpcoesEnvioView: React.FC<OpcoesEnvioViewProps> = ({
   const [isTestingServer, setIsTestingServer] = useState(false);
 
   const lastBranchRef = useRef(activeBranch);
+
+  useEffect(() => {
+    preloadGrupoMsLogoDataUrl().catch(() => {});
+  }, []);
 
   // Sincroniza campos locais quando a base ativa mudar
   useEffect(() => {
@@ -196,6 +201,7 @@ export const OpcoesEnvioView: React.FC<OpcoesEnvioViewProps> = ({
     materialCounts,
     equipmentCounts,
     includeEquipmentDefects,
+    branch: activeBranch,
   });
 
   const handleAddEmail = (e: React.FormEvent) => {
@@ -258,6 +264,7 @@ export const OpcoesEnvioView: React.FC<OpcoesEnvioViewProps> = ({
           <meta charset="utf-8">
           <style>
             @media print {
+              * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
               body { padding: 0 !important; background: #fff !important; }
               div { box-shadow: none !important; border: none !important; }
             }
@@ -533,7 +540,7 @@ export const OpcoesEnvioView: React.FC<OpcoesEnvioViewProps> = ({
       rows.push(`equipamento;${eq.code};${eq.patrimony};${eq.name};;${eq.brand};${eq.type};${eq.voltage}`);
     });
 
-    const branchCode = activeBranch === 'PAULO AFONSO' ? 'PAULO_AFONSO' : 'DELMIRO';
+    const branchCode = getBranchFileSlug(activeBranch);
     const csvContent = '\uFEFF' + header + rows.join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);

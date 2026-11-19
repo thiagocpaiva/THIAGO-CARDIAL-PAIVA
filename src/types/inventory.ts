@@ -102,7 +102,42 @@ export interface ServerEmailConfig {
   lastTestedAt?: string;
 }
 
-export type UnitBranch = 'PAULO AFONSO' | 'DELMIRO';
+export type UnitBranch =
+  | 'PAULO AFONSO'
+  | 'DELMIRO'
+  | 'PAULO AFONSO (TESTE)'
+  | 'DELMIRO (TESTE)';
+
+export const REAL_BRANCHES: UnitBranch[] = ['PAULO AFONSO', 'DELMIRO'];
+export const TEST_BRANCHES: UnitBranch[] = ['PAULO AFONSO (TESTE)', 'DELMIRO (TESTE)'];
+export const ALL_BRANCHES: UnitBranch[] = [
+  'PAULO AFONSO',
+  'DELMIRO',
+  'PAULO AFONSO (TESTE)',
+  'DELMIRO (TESTE)',
+];
+
+export const isTestBranch = (branch?: UnitBranch | null): boolean =>
+  branch === 'PAULO AFONSO (TESTE)' || branch === 'DELMIRO (TESTE)';
+
+export const toTestBranch = (branch?: UnitBranch | null): UnitBranch =>
+  branch === 'DELMIRO' || branch === 'DELMIRO (TESTE)' ? 'DELMIRO (TESTE)' : 'PAULO AFONSO (TESTE)';
+
+export const getSelectableBranches = (isTestMode: boolean): [UnitBranch, UnitBranch] =>
+  isTestMode ? ['PAULO AFONSO (TESTE)', 'DELMIRO (TESTE)'] : ['PAULO AFONSO', 'DELMIRO'];
+
+export const getBranchFileSlug = (branch: UnitBranch): string => {
+  switch (branch) {
+    case 'PAULO AFONSO':
+      return 'PAULO_AFONSO';
+    case 'DELMIRO':
+      return 'DELMIRO';
+    case 'PAULO AFONSO (TESTE)':
+      return 'PAULO_AFONSO_TESTE';
+    case 'DELMIRO (TESTE)':
+      return 'DELMIRO_TESTE';
+  }
+};
 
 export interface StockUser {
   id: string;
@@ -113,8 +148,14 @@ export interface StockUser {
   roleLevel: UserAccessLevel; // 1-Master ou 2-Contador
   branch?: UnitBranch; // Base permitida para Contador (PAULO AFONSO ou DELMIRO). Master tem acesso a ambas.
   status: 'ativo' | 'inativo';
+  isTestUser?: boolean; // Usuário exclusivo de teste local sem sincronismo Firebase
   createdAt: string; // Nome do Master que cadastrou + data e hora
 }
+
+export const CORINGA_REGISTRATION = '9999';
+
+export const isCoringaUser = (user?: Pick<StockUser, 'registration' | 'isTestUser'> | null): boolean =>
+  Boolean(user && (user.isTestUser || user.registration?.trim().toUpperCase() === CORINGA_REGISTRATION));
 
 // Estrutura da Contagem Diária para Materiais
 export interface MaterialDailyEntry {

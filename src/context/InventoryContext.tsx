@@ -15,7 +15,14 @@ import {
   CloneGroupTarget,
   ContadorSession,
   CountStartedBy,
-  UnitBranch
+  UnitBranch,
+  REAL_BRANCHES,
+  TEST_BRANCHES,
+  ALL_BRANCHES,
+  CORINGA_REGISTRATION,
+  isTestBranch,
+  toTestBranch,
+  isCoringaUser
 } from '../types/inventory';
 import {
   INITIAL_MATERIALS,
@@ -23,6 +30,7 @@ import {
   INITIAL_EQUIPMENTS,
   INITIAL_LOGS,
   INITIAL_USERS,
+  CORINGA_USER,
   INITIAL_EMAIL_SETTINGS,
   INITIAL_SERVER_EMAIL_CONFIG
 } from '../data/initialData';
@@ -53,6 +61,8 @@ interface InventoryContextType {
 
   // Permissões e Controle de Concorrência
   isMaster: boolean;
+  isCoringa: boolean;
+  recloneTestBasesFromApp: () => void;
   activeContadorSession: ContadorSession | null;
   isContadorActive: boolean;
   clearContadorSession: (targetBranchChoice?: UnitBranch) => void;
@@ -107,7 +117,8 @@ interface InventoryContextType {
   resetAllTodayCountsByMaster: (scope?: 'materiais' | 'equipamentos' | 'ambos') => void;
 
   // Autenticação / Login
-  login: (registration: string, password: string, branchChoice?: UnitBranch) => Promise<{ success: boolean; message?: string }>;
+  verifyCredentials: (registration: string, password: string) => Promise<{ success: boolean; message?: string; user?: StockUser }>;
+  login: (registration: string, password: string, branchChoice?: UnitBranch, skipUsersRefresh?: boolean) => Promise<{ success: boolean; message?: string }>;
   logout: () => void;
   setActiveUser: (user: StockUser | null) => void;
 
@@ -182,8 +193,43 @@ interface InventoryContextType {
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
 
 export const getBranchStorageKey = (branch: UnitBranch, subKey: string) => {
-  const code = branch === 'PAULO AFONSO' ? 'pa' : 'del';
-  return `choppstock_${code}_${subKey}`;
+  switch (branch) {
+    case 'PAULO AFONSO':
+      return `choppstock_pa_${subKey}`;
+    case 'DELMIRO':
+      return `choppstock_del_${subKey}`;
+    case 'PAULO AFONSO (TESTE)':
+      return `choppstock_test_pa_${subKey}`;
+    case 'DELMIRO (TESTE)':
+      return `choppstock_test_del_${subKey}`;
+  }
+};
+
+const TEST_USERS_STORAGE_KEY = 'choppstock_test_users_v1';
+const TEST_BASES_CLONED_KEY = 'choppstock_test_bases_cloned_v1';
+
+const ensureCoringaUser = (list: StockUser[]): StockUser[] => {
+  const valid = Array.isArray(list) ? list.filter(u => u && u.registration) : [];
+  const hasCoringa = valid.some(u => isCoringaUser(u));
+  if (hasCoringa) {
+    return valid.map(u =>
+      isCoringaUser(u)
+        ? {
+            ...CORINGA_USER,
+            ...u,
+            id: CORINGA_USER.id,
+            registration: CORINGA_REGISTRATION,
+            name: 'CORINGA',
+            password: '',
+            roleLevel: 'contador',
+            branch: 'PAULO AFONSO (TESTE)',
+            status: 'ativo',
+            isTestUser: true,
+          }
+        : u
+    );
+  }
+  return [...valid, CORINGA_USER];
 };
 
 const hasMaterialEntryQuantity = (m?: Partial<MaterialDailyEntry> | null): boolean => {
@@ -265,20 +311,25 @@ if (typeof window !== 'undefined') {
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const currentTodayKey = getTodayKey();
 
-  // EXIGÊNCIA: Bases independentes PAULO AFONSO e DELMIRO
+  // EXIGÊNCIA: Bases independentes PAULO AFONSO e DELMIRO (+ Bases de Teste isoladas para CORINGA)
   const [activeBranch, setActiveBranchState] = useState<UnitBranch>(() => {
-    // Se houver usuário ativo que é contador, a base dele SEMPRE tem precedência
     const savedUser = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
+    const savedBranch = localStorage.getItem('choppstock_active_branch') as UnitBranch | null;
     if (savedUser) {
       try {
-        const u = JSON.parse(savedUser);
+        const u = JSON.parse(savedUser) as StockUser;
+        if (u && isCoringaUser(u)) {
+          if (savedBranch === 'DELMIRO (TESTE)' || savedBranch === 'PAULO AFONSO (TESTE)') {
+            return savedBranch;
+          }
+          return 'PAULO AFONSO (TESTE)';
+        }
         if (u && u.roleLevel === 'contador' && (u.branch === 'PAULO AFONSO' || u.branch === 'DELMIRO')) {
           return u.branch;
         }
       } catch {}
     }
-    const saved = localStorage.getItem('choppstock_active_branch');
-    if (saved === 'DELMIRO' || saved === 'PAULO AFONSO') return saved;
+    if (savedBranch === 'DELMIRO' || savedBranch === 'PAULO AFONSO') return savedBranch;
     return 'PAULO AFONSO';
   });
 
@@ -296,7 +347,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       activeBranch,
       'materials',
       INITIAL_MATERIALS,
-      [STORAGE_KEYS.MATERIALS, 'choppstock_materials_v7', 'choppstock_materials_v6', 'choppstock_materials_v5', 'choppstock_materials']
+      isTestBranch(activeBranch)
+        ? []
+        : [STORAGE_KEYS.MATERIALS, 'choppstock_materials_v7', 'choppstock_materials_v6', 'choppstock_materials_v5', 'choppstock_materials']
     );
   });
 
@@ -305,7 +358,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       activeBranch,
       'freezers',
       INITIAL_FREEZERS,
-      [STORAGE_KEYS.FREEZERS, 'choppstock_freezers_v7', 'choppstock_freezers_v6', 'choppstock_freezers_v5', 'choppstock_freezers']
+      isTestBranch(activeBranch)
+        ? []
+        : [STORAGE_KEYS.FREEZERS, 'choppstock_freezers_v7', 'choppstock_freezers_v6', 'choppstock_freezers_v5', 'choppstock_freezers']
     );
   });
 
@@ -314,11 +369,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       activeBranch,
       'equipments',
       INITIAL_EQUIPMENTS,
-      [STORAGE_KEYS.EQUIPMENTS, 'choppstock_equipments_v7', 'choppstock_equipments_v6', 'choppstock_equipments_v5', 'choppstock_equipments']
+      isTestBranch(activeBranch)
+        ? []
+        : [STORAGE_KEYS.EQUIPMENTS, 'choppstock_equipments_v7', 'choppstock_equipments_v6', 'choppstock_equipments_v5', 'choppstock_equipments']
     );
   });
 
-  const [users, setUsers] = useState<StockUser[]>(() => {
+  const loadProductionUsersFromStorage = (): StockUser[] => {
     const saved = localStorage.getItem(STORAGE_KEYS.USERS);
     let userList: StockUser[] = INITIAL_USERS;
     if (saved) {
@@ -328,7 +385,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       } catch {}
     }
 
-    // Configura Carlos para PAULO AFONSO e Pedro para DELMIRO
     let needsUpdate = false;
     userList = userList.map(u => {
       if (u.registration === '2001' && !u.branch) {
@@ -353,10 +409,30 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       needsUpdate = true;
     }
 
-    if (needsUpdate) {
-      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(userList));
+    const withCoringa = ensureCoringaUser(userList);
+    if (needsUpdate || withCoringa.length !== userList.length) {
+      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(withCoringa));
     }
-    return userList;
+    return withCoringa;
+  };
+
+  const [users, setUsers] = useState<StockUser[]>(() => {
+    try {
+      const savedActive = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER);
+      if (savedActive) {
+        const u = JSON.parse(savedActive) as StockUser;
+        if (isCoringaUser(u)) {
+          const savedTestUsers = localStorage.getItem(TEST_USERS_STORAGE_KEY);
+          if (savedTestUsers) {
+            const parsedTest = JSON.parse(savedTestUsers);
+            if (Array.isArray(parsedTest) && parsedTest.length > 0) {
+              return ensureCoringaUser(parsedTest);
+            }
+          }
+        }
+      }
+    } catch {}
+    return loadProductionUsersFromStorage();
   });
 
   // Usuário ativo da sessão
@@ -457,24 +533,32 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return readBranchInitialStatus(activeBranch).activeContadorSession;
   });
 
-  // Estado das duas bases para controle de concorrência global (nas duas bases)
-  const [branchStatusPA, setBranchStatusPA] = useState<{
+  // Estado de todas as bases (produção + teste) para controle isolado de concorrência
+  type BranchConcurrencyStatus = {
     countStartedBy: CountStartedBy | null;
     recontagemTargetContador: CountStartedBy | null;
     isReportSent: boolean;
     recontagemUnlocked: boolean;
     activeContadorSession: ContadorSession | null;
     hasCounts: boolean;
-  }>(() => readBranchInitialStatus('PAULO AFONSO'));
+  };
 
-  const [branchStatusDEL, setBranchStatusDEL] = useState<{
-    countStartedBy: CountStartedBy | null;
-    recontagemTargetContador: CountStartedBy | null;
-    isReportSent: boolean;
-    recontagemUnlocked: boolean;
-    activeContadorSession: ContadorSession | null;
-    hasCounts: boolean;
-  }>(() => readBranchInitialStatus('DELMIRO'));
+  const [branchStatuses, setBranchStatuses] = useState<Record<UnitBranch, BranchConcurrencyStatus>>(() => ({
+    'PAULO AFONSO': readBranchInitialStatus('PAULO AFONSO'),
+    'DELMIRO': readBranchInitialStatus('DELMIRO'),
+    'PAULO AFONSO (TESTE)': readBranchInitialStatus('PAULO AFONSO (TESTE)'),
+    'DELMIRO (TESTE)': readBranchInitialStatus('DELMIRO (TESTE)'),
+  }));
+
+  const updateBranchStatusMap = (
+    branch: UnitBranch,
+    updater: BranchConcurrencyStatus | ((prev: BranchConcurrencyStatus) => BranchConcurrencyStatus)
+  ) => {
+    setBranchStatuses(prev => ({
+      ...prev,
+      [branch]: typeof updater === 'function' ? updater(prev[branch]) : updater,
+    }));
+  };
 
   const [emailSettings, setEmailSettings] = useState<EmailSettings>(() => {
     return loadInitialBranchData(
@@ -519,7 +603,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem(getBranchStorageKey(activeBranch, 'email_settings'), JSON.stringify(updated));
       return updated;
     });
-    if (activeUserRef.current?.roleLevel === 'master') markMasterChangesPending();
+    if (isMaster) markMasterChangesPending();
   };
 
   const defaultSenderEmail = serverEmailConfig.senderEmail || emailSettings.defaultEmail || '';
@@ -603,15 +687,24 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return {};
   });
 
-  // Alternar base ativa com carregamento integral isolado (apenas Master)
+  // Alternar base ativa com carregamento integral isolado (apenas Master ou Coringa dentro das suas bases)
   const setActiveBranch = (newBranch: UnitBranch) => {
-    // Bloqueio: Usuário Contador não pode alternar de base
-    if (activeUser?.roleLevel === 'contador' && newBranch !== activeUser.branch) {
-      return;
+    const user = activeUserRef.current;
+    const isCoringaUserActive = isCoringaUser(user);
+
+    if (isCoringaUserActive) {
+      if (!isTestBranch(newBranch)) return;
+    } else {
+      if (isTestBranch(newBranch)) return;
+      // Bloqueio: Usuário Contador não pode alternar de base
+      if (user?.roleLevel === 'contador' && newBranch !== user.branch) {
+        return;
+      }
     }
+
     if (newBranch === activeBranch) return;
-    if (activeUser?.roleLevel === 'master') {
-      const targetBranchStatus = newBranch === 'PAULO AFONSO' ? branchStatusPA : branchStatusDEL;
+    if (!isCoringaUserActive && user?.roleLevel === 'master') {
+      const targetBranchStatus = branchStatuses[newBranch];
       const targetInProgress = targetBranchStatus.recontagemUnlocked || (
         !targetBranchStatus.isReportSent &&
         targetBranchStatus.hasCounts &&
@@ -627,9 +720,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setActiveBranchState(newBranch);
     localStorage.setItem('choppstock_active_branch', newBranch);
 
-    const mats = loadInitialBranchData(newBranch, 'materials', INITIAL_MATERIALS, [STORAGE_KEYS.MATERIALS]);
-    const frzs = loadInitialBranchData(newBranch, 'freezers', INITIAL_FREEZERS, [STORAGE_KEYS.FREEZERS]);
-    const eqs = loadInitialBranchData(newBranch, 'equipments', INITIAL_EQUIPMENTS, [STORAGE_KEYS.EQUIPMENTS]);
+    const legacyMats = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.MATERIALS];
+    const legacyFrzs = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.FREEZERS];
+    const legacyEqs = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.EQUIPMENTS];
+    const legacyEmail = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.EMAIL_SETTINGS];
+    const legacySrv = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.SERVER_EMAIL_CONFIG];
+
+    const mats = loadInitialBranchData(newBranch, 'materials', INITIAL_MATERIALS, legacyMats);
+    const frzs = loadInitialBranchData(newBranch, 'freezers', INITIAL_FREEZERS, legacyFrzs);
+    const eqs = loadInitialBranchData(newBranch, 'equipments', INITIAL_EQUIPMENTS, legacyEqs);
     const dKey = loadInitialBranchData(newBranch, 'calendar_day', currentTodayKey, []);
     const mCounts = loadInitialBranchData(newBranch, 'today_materials', {}, []);
     const eqCounts = loadInitialBranchData(newBranch, 'today_equipments', {}, []);
@@ -641,8 +740,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const sess = sessStr ? JSON.parse(sessStr) : null;
 
     // Configurações e destinatários de e-mail independentes por base
-    const branchEmailSettings = loadInitialBranchData(newBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, [STORAGE_KEYS.EMAIL_SETTINGS]);
-    const branchServerConfig = loadInitialBranchData(newBranch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, [STORAGE_KEYS.SERVER_EMAIL_CONFIG]);
+    const branchEmailSettings = loadInitialBranchData(newBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, legacyEmail);
+    const branchServerConfig = loadInitialBranchData(newBranch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, legacySrv);
     let branchRecipients = localStorage.getItem(getBranchStorageKey(newBranch, 'recipients_text'));
     if (branchRecipients === null) {
       branchRecipients = branchEmailSettings.emails.join(', ');
@@ -708,9 +807,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }, 50);
   };
 
-  // Bloqueio rigoroso: Usuário Contador fica restrito estritamente à base cadastrada
+  // Bloqueio rigoroso: Usuário Contador padrão fica restrito estritamente à base cadastrada (CORINGA navega livremente nas bases teste)
   useEffect(() => {
-    if (activeUser && activeUser.roleLevel === 'contador' && activeUser.branch) {
+    if (activeUser && activeUser.roleLevel === 'contador' && !isCoringaUser(activeUser) && activeUser.branch) {
       if (activeBranch !== activeUser.branch) {
         setActiveBranch(activeUser.branch);
       }
@@ -739,14 +838,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return !hasMats && !hasEqs && !hasUncat && !hasRecMats && !hasRecEqs && !hasSelectedMats && !hasSelectedEqs && !countStartedBy && !recontagemTargetContador;
   };
 
-  // Verificação diária por base (limpeza ao virar o dia em ambas as bases, incluindo recontagem)
+  // Verificação diária por base (limpeza ao virar o dia em todas as bases, reais e teste)
   useEffect(() => {
-    const branches: UnitBranch[] = ['PAULO AFONSO', 'DELMIRO'];
-
     const checkDailyRollover = () => {
       const todayStr = getTodayKey();
 
-      branches.forEach(b => {
+      ALL_BRANCHES.forEach(b => {
         const storedDay = localStorage.getItem(getBranchStorageKey(b, 'calendar_day'));
         if (storedDay && storedDay !== todayStr) {
           const savedMat = localStorage.getItem(getBranchStorageKey(b, 'today_materials'));
@@ -781,7 +878,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           localStorage.setItem(getBranchStorageKey(b, 'today_equipments'), JSON.stringify({}));
           localStorage.setItem(getBranchStorageKey(b, 'today_uncatalogued'), JSON.stringify([]));
 
-          // EXIGÊNCIA: Na tela Recontagem, os itens são limpos/zerados ao virar o dia, das duas bases
+          // EXIGÊNCIA: Na tela Recontagem, os itens são limpos/zerados ao virar o dia
           localStorage.setItem(getBranchStorageKey(b, 'recontagem_selected_ids'), JSON.stringify({}));
           localStorage.setItem(getBranchStorageKey(b, 'recontagem_material_counts'), JSON.stringify({}));
           localStorage.setItem(getBranchStorageKey(b, 'recontagem_equipment_counts'), JSON.stringify({}));
@@ -801,11 +898,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             activeContadorSession: null,
             hasCounts: false,
           };
-          if (b === 'PAULO AFONSO') {
-            setBranchStatusPA(clearedStatus);
-          } else {
-            setBranchStatusDEL(clearedStatus);
-          }
+          updateBranchStatusMap(b, clearedStatus);
 
           // Se a base processada for a base ativa em tela, reseta os estados do React imediatamente
           if (b === activeBranch) {
@@ -860,7 +953,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [equipments, activeBranch]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+    if (isCoringaUser(activeUserRef.current)) {
+      localStorage.setItem(TEST_USERS_STORAGE_KEY, JSON.stringify(users));
+    } else {
+      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(ensureCoringaUser(users)));
+    }
   }, [users]);
 
   useEffect(() => {
@@ -974,26 +1071,32 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       || localStorage.getItem('choppstock_pending_master_sync') === 'true';
   });
 
-  const hasPendingMasterSync =
-    (activeBranch === 'PAULO AFONSO' ? pendingSyncPA : pendingSyncDEL) || pendingUsersSync;
+  const hasPendingMasterSync = isCoringaUser(activeUser) || isTestBranch(activeBranch)
+    ? false
+    : (activeBranch === 'PAULO AFONSO' ? pendingSyncPA : pendingSyncDEL) || pendingUsersSync;
 
   const [lastFirebaseSyncAt, setLastFirebaseSyncAt] = useState<string | null>(() => {
     return localStorage.getItem('choppstock_last_firebase_sync_at');
   });
 
   const markMasterChangesPending = (target?: UnitBranch | 'AMBAS' | 'USERS') => {
+    // Modo Teste (CORINGA / bases teste) nunca marca nem sincroniza pendências com Firebase
+    if (isCoringaUser(activeUserRef.current) || isTestBranch(activeBranchRef.current)) {
+      return;
+    }
     if (target === 'USERS') {
       setPendingUsersSync(true);
       localStorage.setItem('choppstock_pending_users_sync', 'true');
       return;
     }
     const branchesToMark: UnitBranch[] =
-      target === 'AMBAS' ? ['PAULO AFONSO', 'DELMIRO'] : [target || activeBranchRef.current];
+      target === 'AMBAS' ? [...REAL_BRANCHES] : [target || activeBranchRef.current];
     branchesToMark.forEach(b => {
+      if (isTestBranch(b)) return;
       localStorage.setItem(getBranchStorageKey(b, 'pending_master_sync'), 'true');
       if (b === 'PAULO AFONSO') {
         setPendingSyncPA(true);
-      } else {
+      } else if (b === 'DELMIRO') {
         setPendingSyncDEL(true);
       }
     });
@@ -1075,11 +1178,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       hasCounts,
     };
 
-    if (branch === 'PAULO AFONSO') {
-      setBranchStatusPA(statusObj);
-    } else {
-      setBranchStatusDEL(statusObj);
-    }
+    updateBranchStatusMap(branch, statusObj);
 
     // Salva cadastros permanentes e destinatários no localStorage da respectiva base
     if (effMaterials) {
@@ -1182,8 +1281,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (cancelled || activeUserRef.current) return;
 
       if (remoteUsers && remoteUsers.length > 0) {
-        setUsers(remoteUsers);
-        localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(remoteUsers));
+        const syncedList = ensureCoringaUser(remoteUsers);
+        setUsers(syncedList);
+        localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(syncedList));
       }
     };
 
@@ -1210,11 +1310,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
   };
 
-  // Nível de Acesso
-  const isMaster = !!activeUser && activeUser.roleLevel === 'master';
+  // Nível de Acesso (CORINGA 9999 possui acesso total igual Master somente nas bases teste, sem Firebase)
+  const isCoringa = isCoringaUser(activeUser);
+  const isMaster = !!activeUser && (activeUser.roleLevel === 'master' || isCoringa);
 
-  // Controle de Contador ativo na base atual
-  const isContadorActive = !!activeContadorSession && activeContadorSession.userId !== activeUser?.id;
+  // Controle de Contador ativo na base atual (ignora sessões para CORINGA em modo teste)
+  const isContadorActive = !isCoringa && !!activeContadorSession && activeContadorSession.userId !== activeUser?.id;
 
   // Verificação de itens contados hoje na base atual
   const hasCurrentBranchCounts = useMemo(() => {
@@ -1224,22 +1325,23 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return hasMats || hasEqs || hasUncat;
   }, [materialCounts, equipmentCounts, uncataloguedEquipments]);
 
-  // Contagem ou recontagem em andamento na base PAULO AFONSO
-  const isCountInProgressPA = useMemo(() => {
-    if (branchStatusPA.recontagemUnlocked) return true;
-    if (branchStatusPA.isReportSent) return false;
-    return branchStatusPA.hasCounts && (!!branchStatusPA.countStartedBy || !!branchStatusPA.activeContadorSession);
-  }, [branchStatusPA]);
+  const checkBranchInProgress = (b: UnitBranch): boolean => {
+    const st = branchStatuses[b];
+    if (!st) return false;
+    if (st.recontagemUnlocked) return true;
+    if (st.isReportSent) return false;
+    return st.hasCounts && (!!st.countStartedBy || !!st.activeContadorSession);
+  };
 
-  // Contagem ou recontagem em andamento na base DELMIRO
-  const isCountInProgressDEL = useMemo(() => {
-    if (branchStatusDEL.recontagemUnlocked) return true;
-    if (branchStatusDEL.isReportSent) return false;
-    return branchStatusDEL.hasCounts && (!!branchStatusDEL.countStartedBy || !!branchStatusDEL.activeContadorSession);
-  }, [branchStatusDEL]);
+  // Contagem ou recontagem em andamento por base
+  const isCountInProgressPA = useMemo(() => checkBranchInProgress('PAULO AFONSO'), [branchStatuses]);
+  const isCountInProgressDEL = useMemo(() => checkBranchInProgress('DELMIRO'), [branchStatuses]);
 
   // Contagem ou recontagem em andamento na base ativa
-  const isCountInProgress = activeBranch === 'PAULO AFONSO' ? isCountInProgressPA : isCountInProgressDEL;
+  const isCountInProgress = useMemo(() => {
+    if (isCoringa) return false;
+    return checkBranchInProgress(activeBranch);
+  }, [isCoringa, activeBranch, branchStatuses]);
 
   // Bloqueio isolado por base: contagem/recontagem em uma base bloqueia somente os usuários daquela base
   const isAnyBaseCountInProgress = isCountInProgress;
@@ -1247,6 +1349,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Permissão do usuário ativo para realizar contagens normais (Materiais / Equipamentos) na base atual
   const canActiveUserCount = useMemo(() => {
     if (!activeUser) return false;
+    if (isCoringa) return true;
 
     // Master: se houver contagem ou recontagem em andamento, Master não pode realizar alteração na contagem
     if (activeUser.roleLevel === 'master') {
@@ -1265,11 +1368,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     return true;
-  }, [activeUser, isCountInProgress, recontagemUnlocked, isReportSent, recontagemTargetContador, countStartedBy]);
+  }, [activeUser, isCoringa, isCountInProgress, recontagemUnlocked, isReportSent, recontagemTargetContador, countStartedBy]);
 
   // Bloqueio específico para edição na tela Recontagem
   const canActiveUserRecount = useMemo(() => {
     if (!activeUser) return false;
+    if (isCoringa) return true;
     if (activeUser.roleLevel === 'master') {
       // Master só pode visualizar/pré-editar fora de contagem/recontagem em andamento
       return !isAnyBaseCountInProgress && !recontagemUnlocked;
@@ -1285,7 +1389,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (!matchesId && !matchesReg) return false;
     }
     return true;
-  }, [activeUser, isAnyBaseCountInProgress, recontagemUnlocked, recontagemTargetContador, countStartedBy]);
+  }, [activeUser, isCoringa, isAnyBaseCountInProgress, recontagemUnlocked, recontagemTargetContador, countStartedBy]);
 
   const cantCountReason = useMemo(() => {
     if (canActiveUserCount) return null;
@@ -1308,9 +1412,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return 'Existe contagem em andamento.';
   }, [canActiveUserCount, activeUser, isCountInProgress, recontagemUnlocked, isReportSent, recontagemTargetContador, countStartedBy]);
 
-
-  // Transmissão de sincronização em segundo plano
+  // Transmissão de sincronização em segundo plano (nunca dispara quando em Modo Teste CORINGA ou bases teste)
   const broadcastSync = (actionType: string) => {
+    if (isCoringaUser(activeUserRef.current) || isTestBranch(activeBranchRef.current)) {
+      return;
+    }
     try {
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         const bc = new BroadcastChannel('choppstock_realtime_sync_v1');
@@ -1343,8 +1449,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setRecontagemTargetContador(statusCur.recontagemTargetContador);
       setIsReportSent(statusCur.isReportSent);
       setRecontagemUnlocked(statusCur.recontagemUnlocked);
-      setBranchStatusPA(readBranchInitialStatus('PAULO AFONSO'));
-      setBranchStatusDEL(readBranchInitialStatus('DELMIRO'));
+      setBranchStatuses({
+        'PAULO AFONSO': readBranchInitialStatus('PAULO AFONSO'),
+        'DELMIRO': readBranchInitialStatus('DELMIRO'),
+        'PAULO AFONSO (TESTE)': readBranchInitialStatus('PAULO AFONSO (TESTE)'),
+        'DELMIRO (TESTE)': readBranchInitialStatus('DELMIRO (TESTE)'),
+      });
       const storedMaterials = localStorage.getItem(getBranchStorageKey(curBranch, 'materials'));
       if (storedMaterials) {
         try { setMaterials(JSON.parse(storedMaterials)); } catch {}
@@ -1357,9 +1467,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (storedEquips) {
         try { setEquipments(JSON.parse(storedEquips)); } catch {}
       }
-      const storedUsers = localStorage.getItem(STORAGE_KEYS.USERS);
+      const isCoringaActive = isCoringaUser(activeUserRef.current);
+      const storedUsers = localStorage.getItem(isCoringaActive ? TEST_USERS_STORAGE_KEY : STORAGE_KEYS.USERS);
       if (storedUsers) {
-        try { setUsers(JSON.parse(storedUsers)); } catch {}
+        try { setUsers(ensureCoringaUser(JSON.parse(storedUsers))); } catch {}
       }
       const storedServerEmail = localStorage.getItem(getBranchStorageKey(curBranch, 'server_email_config'));
       if (storedServerEmail) {
@@ -1394,6 +1505,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         bc = new BroadcastChannel('choppstock_realtime_sync_v1');
         bc.onmessage = (event: MessageEvent) => {
+          if (isCoringaUser(activeUserRef.current) || isTestBranch(activeBranchRef.current)) {
+            return;
+          }
           if (event.data?.branch && event.data.branch !== activeBranchRef.current) {
             return;
           }
@@ -1404,9 +1518,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const onStorage = (event: StorageEvent) => {
       const cur = activeBranchRef.current;
-      const otherPrefix = cur === 'PAULO AFONSO' ? 'choppstock_del_' : 'choppstock_pa_';
-      if (event.key && event.key.startsWith(otherPrefix)) {
-        return;
+      if (isTestBranch(cur)) {
+        if (event.key && !event.key.startsWith('choppstock_test_')) {
+          return;
+        }
+      } else {
+        if (event.key && event.key.startsWith('choppstock_test_')) {
+          return;
+        }
+        const otherPrefix = cur === 'PAULO AFONSO' ? 'choppstock_del_' : 'choppstock_pa_';
+        if (event.key && event.key.startsWith(otherPrefix)) {
+          return;
+        }
       }
       handleBackgroundSync();
     };
@@ -1421,9 +1544,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   }, []);
 
-  // Inicia a marcação de contagem iniciada apenas ao inserir a primeira quantidade em um item pelo contador (local até o envio do e-mail)
+  // Inicia a marcação de contagem iniciada apenas ao inserir a primeira quantidade em um item pelo contador (nunca para CORINGA)
   const ensureCountStarted = () => {
-    if (!activeUser || activeUser.roleLevel !== 'contador') return;
+    if (!activeUser || activeUser.roleLevel !== 'contador' || isCoringaUser(activeUser)) return;
 
     let startedVal = countStartedBy;
     let sessionVal = activeContadorSession;
@@ -1454,25 +1577,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       changed = true;
     }
 
-    const updateBranchStatus = (prev: {
-      countStartedBy: CountStartedBy | null;
-      recontagemTargetContador: CountStartedBy | null;
-      isReportSent: boolean;
-      recontagemUnlocked: boolean;
-      activeContadorSession: ContadorSession | null;
-      hasCounts: boolean;
-    }) => ({
+    updateBranchStatusMap(activeBranch, prev => ({
       ...prev,
       countStartedBy: startedVal,
       activeContadorSession: sessionVal,
       hasCounts: true,
-    });
-
-    if (activeBranch === 'PAULO AFONSO') {
-      setBranchStatusPA(updateBranchStatus);
-    } else {
-      setBranchStatusDEL(updateBranchStatus);
-    }
+    }));
 
     if (changed) {
       broadcastSync('COUNT_STARTED');
@@ -1499,11 +1609,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       activeContadorSession: null,
       hasCounts: false,
     };
-    if (activeBranch === 'PAULO AFONSO') {
-      setBranchStatusPA(emptyStatus);
-    } else {
-      setBranchStatusDEL(emptyStatus);
-    }
+    updateBranchStatusMap(activeBranch, emptyStatus);
     if (hadLock) {
       broadcastSync('COUNT_CLEARED');
     }
@@ -2100,11 +2206,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         activeContadorSession: null,
         hasCounts: false,
       };
-      if (activeBranch === 'PAULO AFONSO') {
-        setBranchStatusPA(clearedStatus);
-      } else {
-        setBranchStatusDEL(clearedStatus);
-      }
+      updateBranchStatusMap(activeBranch, clearedStatus);
 
       localStorage.removeItem(getBranchStorageKey(activeBranch, 'count_started_by'));
       localStorage.removeItem(getBranchStorageKey(activeBranch, 'recontagem_target_contador'));
@@ -2113,22 +2215,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_unlocked'), JSON.stringify(false));
     } else {
       const updatedBranchHasCounts = remainingHasMats || remainingHasEqs;
-      const updatePartialStatus = (prev: {
-        countStartedBy: CountStartedBy | null;
-        recontagemTargetContador: CountStartedBy | null;
-        isReportSent: boolean;
-        recontagemUnlocked: boolean;
-        activeContadorSession: ContadorSession | null;
-        hasCounts: boolean;
-      }) => ({
+      updateBranchStatusMap(activeBranch, prev => ({
         ...prev,
         hasCounts: updatedBranchHasCounts,
-      });
-      if (activeBranch === 'PAULO AFONSO') {
-        setBranchStatusPA(updatePartialStatus);
-      } else {
-        setBranchStatusDEL(updatePartialStatus);
-      }
+      }));
     }
 
     markMasterChangesPending();
@@ -2183,26 +2273,39 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const markCountAsSent = async (targetBranchChoice?: UnitBranch): Promise<{ synced: boolean; message?: string }> => {
     const branchToMark = targetBranchChoice || activeBranch;
     const todayStr = getTodayKey();
+    const isIsolatedTest = isCoringa || isTestBranch(branchToMark);
+
     if (branchToMark === activeBranch) {
-      setIsReportSent(true);
+      if (!isIsolatedTest) {
+        setIsReportSent(true);
+        localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(true));
+      }
       setRecontagemUnlocked(false);
       setActiveContadorSession(null);
-      localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(true));
       localStorage.setItem(getBranchStorageKey(branchToMark, 'recontagem_unlocked'), JSON.stringify(false));
       localStorage.removeItem(getBranchStorageKey(branchToMark, 'active_contador_session'));
-      const sentStatus = {
+      updateBranchStatusMap(branchToMark, {
         countStartedBy,
         recontagemTargetContador,
-        isReportSent: true,
+        isReportSent: !isIsolatedTest,
         recontagemUnlocked: false,
         activeContadorSession: null,
         hasCounts: hasCurrentBranchCounts,
+      });
+    }
+
+    if (isIsolatedTest) {
+      addLog({
+        type: 'envio',
+        targetType: 'contagem',
+        itemCode: 'EMAIL-TESTE',
+        title: `Envio Simulado em Modo Teste [${branchToMark}]`,
+        description: `Relatório preparado localmente na base de teste ${branchToMark} (sem sincronismo com Firebase e sem interferir nas bases reais).`,
+      });
+      return {
+        synced: true,
+        message: `Modo Teste (${branchToMark}): e-mail preparado localmente sem sincronismo com o Firebase.`,
       };
-      if (branchToMark === 'PAULO AFONSO') {
-        setBranchStatusPA(sentStatus);
-      } else {
-        setBranchStatusDEL(sentStatus);
-      }
     }
 
     // EXIGÊNCIA: Somente quando o contador enviar o e-mail do relatório da contagem é que todas as informações
@@ -2246,7 +2349,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!isMaster) {
       return { success: false, message: 'Apenas o usuário Master pode liberar a recontagem.' };
     }
-    if (recontagemUnlocked || isAnyBaseCountInProgress) {
+    if (!isCoringa && (recontagemUnlocked || isAnyBaseCountInProgress)) {
       return { success: false, message: 'Existe contagem em andamento.' };
     }
     if (recontagemSelectedCount === 0) {
@@ -2272,22 +2375,25 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem(getBranchStorageKey(branchToRelease, 'recontagem_unlocked'), JSON.stringify(true));
     localStorage.setItem(getBranchStorageKey(branchToRelease, 'recontagem_target_contador'), JSON.stringify(effTargetContador));
 
-    const updateStatus = (prev: {
-      countStartedBy: CountStartedBy | null;
-      recontagemTargetContador: CountStartedBy | null;
-      isReportSent: boolean;
-      recontagemUnlocked: boolean;
-      activeContadorSession: ContadorSession | null;
-      hasCounts: boolean;
-    }) => ({
+    updateBranchStatusMap(branchToRelease, prev => ({
       ...prev,
       recontagemTargetContador: effTargetContador,
       recontagemUnlocked: true,
-    });
-    if (branchToRelease === 'PAULO AFONSO') {
-      setBranchStatusPA(updateStatus);
-    } else {
-      setBranchStatusDEL(updateStatus);
+    }));
+
+    if (isCoringa || isTestBranch(branchToRelease)) {
+      const initiatorLabel = `${effTargetContador.userName} (Matrícula: ${effTargetContador.registration})`;
+      addLog({
+        type: 'contagem',
+        targetType: 'contagem',
+        itemCode: 'RECOUNT-TEST',
+        title: `Recontagem Liberada em Modo Teste [${branchToRelease}]`,
+        description: `Simulação local de liberação de ${recontagemSelectedCount} item(ns) para ${initiatorLabel} (sem sincronismo Firebase).`,
+      });
+      return {
+        success: true,
+        message: `Modo Teste: Recontagem liberada localmente na base ${branchToRelease} para ${initiatorLabel} (sem Firebase).`,
+      };
     }
 
     try {
@@ -2334,28 +2440,23 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!isMaster) {
       return { success: false, message: 'Apenas o usuário Master pode bloquear a recontagem.' };
     }
-    if (recontagemUnlocked) {
+    if (!isCoringa && recontagemUnlocked) {
       return { success: false, message: 'Existe contagem em andamento.' };
     }
     const branchToLock = activeBranchRef.current;
     setRecontagemUnlocked(false);
     localStorage.setItem(getBranchStorageKey(branchToLock, 'recontagem_unlocked'), JSON.stringify(false));
 
-    const updateStatus = (prev: {
-      countStartedBy: CountStartedBy | null;
-      recontagemTargetContador: CountStartedBy | null;
-      isReportSent: boolean;
-      recontagemUnlocked: boolean;
-      activeContadorSession: ContadorSession | null;
-      hasCounts: boolean;
-    }) => ({
+    updateBranchStatusMap(branchToLock, prev => ({
       ...prev,
       recontagemUnlocked: false,
-    });
-    if (branchToLock === 'PAULO AFONSO') {
-      setBranchStatusPA(updateStatus);
-    } else {
-      setBranchStatusDEL(updateStatus);
+    }));
+
+    if (isCoringa || isTestBranch(branchToLock)) {
+      return {
+        success: true,
+        message: `Modo Teste: Liberação de recontagem encerrada localmente na base ${branchToLock}.`,
+      };
     }
 
     try {
@@ -2385,30 +2486,28 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Marca envio da recontagem por e-mail pelo Contador e sincroniza resultados com Firestore
   const markRecountAsSent = async (): Promise<{ synced: boolean; message?: string }> => {
     const branchToMark = activeBranchRef.current;
+    const isIsolatedTest = isCoringa || isTestBranch(branchToMark);
     setRecontagemUnlocked(false);
-    setIsReportSent(true);
+    if (!isIsolatedTest) {
+      setIsReportSent(true);
+      localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(true));
+    }
     setActiveContadorSession(null);
     localStorage.setItem(getBranchStorageKey(branchToMark, 'recontagem_unlocked'), JSON.stringify(false));
-    localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(true));
     localStorage.removeItem(getBranchStorageKey(branchToMark, 'active_contador_session'));
 
-    const updateStatus = (prev: {
-      countStartedBy: CountStartedBy | null;
-      recontagemTargetContador: CountStartedBy | null;
-      isReportSent: boolean;
-      recontagemUnlocked: boolean;
-      activeContadorSession: ContadorSession | null;
-      hasCounts: boolean;
-    }) => ({
+    updateBranchStatusMap(branchToMark, prev => ({
       ...prev,
-      isReportSent: true,
+      isReportSent: !isIsolatedTest,
       recontagemUnlocked: false,
       activeContadorSession: null,
-    });
-    if (branchToMark === 'PAULO AFONSO') {
-      setBranchStatusPA(updateStatus);
-    } else {
-      setBranchStatusDEL(updateStatus);
+    }));
+
+    if (isIsolatedTest) {
+      return {
+        synced: true,
+        message: `Modo Teste: Relatório da recontagem preparado localmente na base ${branchToMark} (sem Firebase).`,
+      };
     }
 
     let synced = false;
@@ -2470,23 +2569,17 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_unlocked'), JSON.stringify(false));
     localStorage.removeItem(getBranchStorageKey(branchToCancel, 'active_contador_session'));
 
-    const updateStatus = (prev: {
-      countStartedBy: CountStartedBy | null;
-      recontagemTargetContador: CountStartedBy | null;
-      isReportSent: boolean;
-      recontagemUnlocked: boolean;
-      activeContadorSession: ContadorSession | null;
-      hasCounts: boolean;
-    }) => ({
+    updateBranchStatusMap(branchToCancel, prev => ({
       ...prev,
       recontagemTargetContador: null,
       recontagemUnlocked: false,
       activeContadorSession: null,
-    });
-    if (branchToCancel === 'PAULO AFONSO') {
-      setBranchStatusPA(updateStatus);
-    } else {
-      setBranchStatusDEL(updateStatus);
+    }));
+
+    if (isCoringa || isTestBranch(branchToCancel)) {
+      const localMsg = `Modo Teste: Recontagem cancelada localmente na base ${branchToCancel}.`;
+      setSystemNotice(localMsg);
+      return { synced: true, message: localMsg };
     }
 
     let synced = false;
@@ -2532,11 +2625,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!isMaster) {
       return { success: false, message: 'Apenas o usuário Master pode sincronizar os dados.' };
     }
+    const targetBranch = activeBranchRef.current;
+    if (isCoringa || isTestBranch(targetBranch)) {
+      return {
+        success: true,
+        message: 'Modo Teste (CORINGA): nenhum sincronismo realizado com o Firebase. As alterações permanecem apenas nas bases teste locais.',
+      };
+    }
     if (isAnyBaseCountInProgress) {
       return { success: false, message: 'Existe contagem em andamento.' };
     }
-
-    const targetBranch = activeBranchRef.current;
 
     try {
       setFrozenReportText(null);
@@ -2591,22 +2689,261 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
-  // --- AUTENTICAÇÃO / LOGIN (BUSCA AUTOMÁTICA ÚNICA NO FIREBASE AO LOGAR) ---
+  // --- CLONAGEM DAS BASES REAIS PARA AS BASES DE TESTE ISOLADAS (CORINGA) ---
+  const cloneRealBasesToTestBases = (forceReclone: boolean = false) => {
+    if (!forceReclone && localStorage.getItem(TEST_BASES_CLONED_KEY) === 'true') {
+      const hasPaTest = localStorage.getItem(getBranchStorageKey('PAULO AFONSO (TESTE)', 'materials')) !== null;
+      const hasDelTest = localStorage.getItem(getBranchStorageKey('DELMIRO (TESTE)', 'materials')) !== null;
+      if (hasPaTest && hasDelTest && localStorage.getItem(TEST_USERS_STORAGE_KEY) !== null) {
+        return;
+      }
+    }
+
+    const branchPairs: Array<{ real: UnitBranch; test: UnitBranch }> = [
+      { real: 'PAULO AFONSO', test: 'PAULO AFONSO (TESTE)' },
+      { real: 'DELMIRO', test: 'DELMIRO (TESTE)' },
+    ];
+
+    const keysToClone: Array<{ subKey: string; fallback: unknown; legacyKeys?: string[] }> = [
+      { subKey: 'materials', fallback: INITIAL_MATERIALS, legacyKeys: [STORAGE_KEYS.MATERIALS] },
+      { subKey: 'freezers', fallback: INITIAL_FREEZERS, legacyKeys: [STORAGE_KEYS.FREEZERS] },
+      { subKey: 'equipments', fallback: INITIAL_EQUIPMENTS, legacyKeys: [STORAGE_KEYS.EQUIPMENTS] },
+      { subKey: 'email_settings', fallback: INITIAL_EMAIL_SETTINGS, legacyKeys: [STORAGE_KEYS.EMAIL_SETTINGS] },
+      { subKey: 'server_email_config', fallback: INITIAL_SERVER_EMAIL_CONFIG, legacyKeys: [STORAGE_KEYS.SERVER_EMAIL_CONFIG] },
+      { subKey: 'last_count_backup', fallback: null },
+      { subKey: 'logs', fallback: INITIAL_LOGS },
+      { subKey: 'today_materials', fallback: {} },
+      { subKey: 'today_equipments', fallback: {} },
+      { subKey: 'today_uncatalogued', fallback: [] },
+      { subKey: 'recontagem_selected_ids', fallback: {} },
+      { subKey: 'recontagem_material_counts', fallback: {} },
+      { subKey: 'recontagem_equipment_counts', fallback: {} },
+    ];
+
+    branchPairs.forEach(({ real, test }) => {
+      keysToClone.forEach(({ subKey, fallback, legacyKeys }) => {
+        const realData = loadInitialBranchData(real, subKey, fallback, legacyKeys || []);
+        localStorage.setItem(getBranchStorageKey(test, subKey), JSON.stringify(realData));
+      });
+
+      const realRecipients = localStorage.getItem(getBranchStorageKey(real, 'recipients_text'));
+      if (realRecipients !== null) {
+        localStorage.setItem(getBranchStorageKey(test, 'recipients_text'), realRecipients);
+      } else {
+        const realEmails = loadInitialBranchData(real, 'email_settings', INITIAL_EMAIL_SETTINGS, [STORAGE_KEYS.EMAIL_SETTINGS]);
+        localStorage.setItem(getBranchStorageKey(test, 'recipients_text'), (realEmails.emails || []).join(', '));
+      }
+
+      const realCalDay = localStorage.getItem(getBranchStorageKey(real, 'calendar_day')) || getTodayKey();
+      localStorage.setItem(getBranchStorageKey(test, 'calendar_day'), realCalDay);
+
+      // Bases de teste sempre iniciam sem travas ou sessões da produção
+      localStorage.removeItem(getBranchStorageKey(test, 'active_contador_session'));
+      localStorage.removeItem(getBranchStorageKey(test, 'count_started_by'));
+      localStorage.removeItem(getBranchStorageKey(test, 'recontagem_target_contador'));
+      localStorage.removeItem(getBranchStorageKey(test, 'frozen_report'));
+      localStorage.removeItem(getBranchStorageKey(test, 'pending_master_sync'));
+      localStorage.setItem(getBranchStorageKey(test, 'is_report_sent'), JSON.stringify(false));
+      localStorage.setItem(getBranchStorageKey(test, 'recontagem_unlocked'), JSON.stringify(false));
+    });
+
+    const prodUsers = loadProductionUsersFromStorage();
+    const clonedTestUsers = ensureCoringaUser(prodUsers).map(u => {
+      if (isCoringaUser(u)) return CORINGA_USER;
+      if (u.roleLevel === 'contador' && u.branch) {
+        return { ...u, branch: toTestBranch(u.branch) };
+      }
+      return u;
+    });
+    localStorage.setItem(TEST_USERS_STORAGE_KEY, JSON.stringify(clonedTestUsers));
+    localStorage.setItem(TEST_BASES_CLONED_KEY, 'true');
+
+    setBranchStatuses(prev => ({
+      ...prev,
+      'PAULO AFONSO (TESTE)': readBranchInitialStatus('PAULO AFONSO (TESTE)'),
+      'DELMIRO (TESTE)': readBranchInitialStatus('DELMIRO (TESTE)'),
+    }));
+  };
+
+  const recloneTestBasesFromApp = () => {
+    cloneRealBasesToTestBases(true);
+
+    const curBranch = isTestBranch(activeBranchRef.current) ? activeBranchRef.current : 'PAULO AFONSO (TESTE)';
+    const dKey = getTodayKey();
+    isSwitchingBranchRef.current = true;
+    activeBranchRef.current = curBranch;
+    setActiveBranchState(curBranch);
+
+    setMaterials(loadInitialBranchData(curBranch, 'materials', INITIAL_MATERIALS, []));
+    setFreezers(loadInitialBranchData(curBranch, 'freezers', INITIAL_FREEZERS, []));
+    setEquipments(loadInitialBranchData(curBranch, 'equipments', INITIAL_EQUIPMENTS, []));
+    setMaterialCounts(loadInitialBranchData(curBranch, 'today_materials', {}, []));
+    setEquipmentCounts(loadInitialBranchData(curBranch, 'today_equipments', {}, []));
+    setUncataloguedEquipments(loadInitialBranchData(curBranch, 'today_uncatalogued', [], []));
+    setRecontagemSelectedIds(loadInitialBranchData(curBranch, 'recontagem_selected_ids', {}, []));
+    setRecontagemMaterialCounts(loadInitialBranchData(curBranch, 'recontagem_material_counts', {}, []));
+    setRecontagemEquipmentCounts(loadInitialBranchData(curBranch, 'recontagem_equipment_counts', {}, []));
+    setLastCountBackup(loadInitialBranchData(curBranch, 'last_count_backup', null, []));
+    setLogs(loadInitialBranchData(curBranch, 'logs', INITIAL_LOGS, []));
+    const clonedEmail = loadInitialBranchData(curBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, []);
+    setEmailSettings(clonedEmail);
+    setServerEmailConfig(loadInitialBranchData(curBranch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, []));
+    setRecipientsTextState(localStorage.getItem(getBranchStorageKey(curBranch, 'recipients_text')) ?? clonedEmail.emails.join(', '));
+    setCountStartedBy(null);
+    setRecontagemTargetContador(null);
+    setActiveContadorSession(null);
+    setIsReportSent(false);
+    setRecontagemUnlocked(false);
+    setFrozenReportTextState(null);
+    setTodayKey(dKey);
+
+    try {
+      const savedTestUsers = localStorage.getItem(TEST_USERS_STORAGE_KEY);
+      if (savedTestUsers) {
+        setUsers(ensureCoringaUser(JSON.parse(savedTestUsers)));
+      }
+    } catch {}
+
+    setTimeout(() => {
+      isSwitchingBranchRef.current = false;
+    }, 50);
+
+    setSystemNotice('Bases de teste reclonadas a partir das bases reais do app (PAULO AFONSO e DELMIRO) — 100% local e sem Firebase.');
+  };
+
+  // --- VALIDAÇÃO DE CREDENCIAIS NA TELA DE LOGIN (ANTES DA SELEÇÃO DA BASE DO MASTER) ---
+  const verifyCredentials = async (
+    registration: string,
+    password: string
+  ): Promise<{ success: boolean; message?: string; user?: StockUser }> => {
+    const cleanReg = registration.trim().toUpperCase();
+    const cleanPass = password.trim();
+
+    if (!cleanReg) {
+      return { success: false, message: 'Por favor, informe a matrícula do usuário.' };
+    }
+
+    // CORINGA (9999): validação estritamente local, sem nenhuma consulta ao Firebase
+    if (cleanReg === CORINGA_REGISTRATION) {
+      return { success: true, user: CORINGA_USER };
+    }
+
+    const remoteUsers = await fetchUsersFromFirestore();
+    const effectiveUsers = ensureCoringaUser(remoteUsers && remoteUsers.length > 0 ? remoteUsers : users);
+    if (remoteUsers && remoteUsers.length > 0) {
+      setUsers(effectiveUsers);
+      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(effectiveUsers));
+    }
+
+    const user = effectiveUsers.find(u => u.registration.toUpperCase() === cleanReg);
+    if (!user) {
+      return { success: false, message: 'Matrícula não encontrada.' };
+    }
+
+    if (user.status !== 'ativo') {
+      return { success: false, message: 'Usuário inativo. Contate o Administrador Master.' };
+    }
+
+    if (user.roleLevel === 'master') {
+      if (!cleanPass) {
+        return { success: false, message: 'Por favor, digite a senha de acesso do Usuário Master.' };
+      }
+      if (user.password !== cleanPass) {
+        return { success: false, message: 'Senha incorreta para Usuário Master.' };
+      }
+    }
+
+    return { success: true, user };
+  };
+
+  // --- AUTENTICAÇÃO / LOGIN (BUSCA AUTOMÁTICA ÚNICA NO FIREBASE AO LOGAR; EXCETO CORINGA QUE É 100% LOCAL) ---
   const login = async (
     registration: string,
     password: string,
-    branchChoice?: UnitBranch
+    branchChoice?: UnitBranch,
+    skipUsersRefresh: boolean = false
   ): Promise<{ success: boolean; message?: string }> => {
     const cleanReg = registration.trim().toUpperCase();
     const cleanPass = password.trim();
     const todayStr = getTodayKey();
 
+    // FLUXO ISOLADO DO USUÁRIO TESTE CORINGA (9999):
+    // - Acesso total equivalente ao Master nas bases teste clonadas
+    // - ZERO sincronismo com Firebase e ZERO interferência nos usuários e bases reais
+    if (cleanReg === CORINGA_REGISTRATION) {
+      cloneRealBasesToTestBases(false);
+
+      const targetTestBranch: UnitBranch =
+        branchChoice && isTestBranch(branchChoice) ? branchChoice : 'PAULO AFONSO (TESTE)';
+
+      isSwitchingBranchRef.current = true;
+      activeBranchRef.current = targetTestBranch;
+      setActiveBranchState(targetTestBranch);
+      localStorage.setItem('choppstock_active_branch', targetTestBranch);
+
+      let testUsersList: StockUser[] = [CORINGA_USER];
+      try {
+        const rawTestUsers = localStorage.getItem(TEST_USERS_STORAGE_KEY);
+        if (rawTestUsers) {
+          testUsersList = ensureCoringaUser(JSON.parse(rawTestUsers));
+        }
+      } catch {}
+
+      const dKey = loadInitialBranchData(targetTestBranch, 'calendar_day', todayStr, []);
+      const isNewDay = dKey !== todayStr;
+      if (isNewDay) {
+        localStorage.setItem(getBranchStorageKey(targetTestBranch, 'calendar_day'), todayStr);
+      }
+
+      setUsers(testUsersList);
+      setMaterials(loadInitialBranchData(targetTestBranch, 'materials', INITIAL_MATERIALS, []));
+      setFreezers(loadInitialBranchData(targetTestBranch, 'freezers', INITIAL_FREEZERS, []));
+      setEquipments(loadInitialBranchData(targetTestBranch, 'equipments', INITIAL_EQUIPMENTS, []));
+      setMaterialCounts(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'today_materials', {}, []));
+      setEquipmentCounts(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'today_equipments', {}, []));
+      setUncataloguedEquipments(isNewDay ? [] : loadInitialBranchData(targetTestBranch, 'today_uncatalogued', [], []));
+      setRecontagemSelectedIds(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'recontagem_selected_ids', {}, []));
+      setRecontagemMaterialCounts(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'recontagem_material_counts', {}, []));
+      setRecontagemEquipmentCounts(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'recontagem_equipment_counts', {}, []));
+      setLastCountBackup(loadInitialBranchData(targetTestBranch, 'last_count_backup', null, []));
+      setLogs(loadInitialBranchData(targetTestBranch, 'logs', INITIAL_LOGS, []));
+
+      const testEmail = loadInitialBranchData(targetTestBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, []);
+      const testServer = loadInitialBranchData(targetTestBranch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, []);
+      const testRecipients = localStorage.getItem(getBranchStorageKey(targetTestBranch, 'recipients_text')) ?? testEmail.emails.join(', ');
+
+      setEmailSettings(testEmail);
+      setServerEmailConfig(testServer);
+      setRecipientsTextState(testRecipients);
+      setCountStartedBy(null);
+      setRecontagemTargetContador(null);
+      setActiveContadorSession(null);
+      setIsReportSent(false);
+      setRecontagemUnlocked(false);
+      setFrozenReportTextState(localStorage.getItem(getBranchStorageKey(targetTestBranch, 'frozen_report')));
+      setTodayKey(todayStr);
+      setEmptyMaterialCodesAlert(null);
+
+      setActiveUserState(CORINGA_USER);
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(CORINGA_USER));
+
+      setTimeout(() => {
+        isSwitchingBranchRef.current = false;
+      }, 50);
+
+      setSystemNotice('Modo Teste Isolado (CORINGA - 9999) ativo nas bases teste clonadas. Nenhuma ação interfere no Firebase ou usuários reais.');
+      return { success: true };
+    }
+
     // 1. Atualiza a lista de usuários ao tentar logar e valida credenciais antes de baixar as bases
-    const remoteUsers = await fetchUsersFromFirestore();
-    const effectiveUsers = remoteUsers && remoteUsers.length > 0 ? remoteUsers : users;
-    if (remoteUsers && remoteUsers.length > 0) {
-      setUsers(remoteUsers);
-      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(remoteUsers));
+    let effectiveUsers = ensureCoringaUser(users);
+    if (!skipUsersRefresh) {
+      const remoteUsers = await fetchUsersFromFirestore();
+      if (remoteUsers && remoteUsers.length > 0) {
+        effectiveUsers = ensureCoringaUser(remoteUsers);
+        setUsers(effectiveUsers);
+        localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(effectiveUsers));
+      }
     }
 
     const user = effectiveUsers.find(u => u.registration.toUpperCase() === cleanReg);
@@ -2631,9 +2968,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     // EXIGÊNCIA: Master escolhe a base ao logar (PAULO AFONSO ou DELMIRO) e acessa ambas as bases.
     // Usuários Contadores têm acesso estritamente à base selecionada no seu cadastro.
+    const candidateBranch = branchChoice && !isTestBranch(branchChoice) ? branchChoice : activeBranch;
+    const safeMasterBranch: UnitBranch = isTestBranch(candidateBranch) ? 'PAULO AFONSO' : candidateBranch;
     const targetBranch: UnitBranch = user.roleLevel === 'contador'
-      ? (user.branch || 'PAULO AFONSO')
-      : (branchChoice || activeBranch || 'PAULO AFONSO');
+      ? (user.branch && !isTestBranch(user.branch) ? user.branch : 'PAULO AFONSO')
+      : safeMasterBranch;
 
     // 2. Ao logar, busca do Firebase apenas os dados da(s) respectiva(s) base(s) de acesso do usuário
     let remotePA: BranchSyncPayload | null = null;
@@ -2870,20 +3209,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
         setActiveContadorSession(resumedSession);
         localStorage.setItem(getBranchStorageKey(targetBranch, 'active_contador_session'), JSON.stringify(resumedSession));
-        if (targetBranch === 'PAULO AFONSO') {
-          setBranchStatusPA(prev => ({ ...prev, activeContadorSession: resumedSession }));
-        } else {
-          setBranchStatusDEL(prev => ({ ...prev, activeContadorSession: resumedSession }));
-        }
+        updateBranchStatusMap(targetBranch, prev => ({ ...prev, activeContadorSession: resumedSession }));
       } else {
         // Enquanto nada foi inserido, não ativa sessão bloqueadora nem envia ao Firebase
         setActiveContadorSession(null);
         localStorage.removeItem(getBranchStorageKey(targetBranch, 'active_contador_session'));
-        if (targetBranch === 'PAULO AFONSO') {
-          setBranchStatusPA(prev => ({ ...prev, activeContadorSession: null, countStartedBy: null, hasCounts: false }));
-        } else {
-          setBranchStatusDEL(prev => ({ ...prev, activeContadorSession: null, countStartedBy: null, hasCounts: false }));
-        }
+        updateBranchStatusMap(targetBranch, prev => ({ ...prev, activeContadorSession: null, countStartedBy: null, hasCounts: false }));
       }
       broadcastSync('SESSION_UPDATE');
     }
@@ -2943,24 +3274,28 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const logout = () => {
-    if (activeUser?.roleLevel === 'contador') {
+    const wasCoringa = isCoringaUser(activeUser);
+    if (!wasCoringa && activeUser?.roleLevel === 'contador') {
       setActiveContadorSession(null);
       localStorage.removeItem(getBranchStorageKey(activeBranch, 'active_contador_session'));
       broadcastSync('SESSION_UPDATE');
     }
     setActiveUserState(null);
     localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER);
+    if (wasCoringa) {
+      // Restaura lista de usuários reais e base real padrão ao sair do modo Coringa
+      setUsers(loadProductionUsersFromStorage());
+      activeBranchRef.current = 'PAULO AFONSO';
+      setActiveBranchState('PAULO AFONSO');
+      localStorage.setItem('choppstock_active_branch', 'PAULO AFONSO');
+    }
   };
 
   const clearContadorSession = (targetBranchChoice?: UnitBranch) => {
     const b = targetBranchChoice || activeBranch;
     setActiveContadorSession(null);
     localStorage.removeItem(getBranchStorageKey(b, 'active_contador_session'));
-    if (b === 'PAULO AFONSO') {
-      setBranchStatusPA(prev => ({ ...prev, activeContadorSession: null }));
-    } else {
-      setBranchStatusDEL(prev => ({ ...prev, activeContadorSession: null }));
-    }
+    updateBranchStatusMap(b, prev => ({ ...prev, activeContadorSession: null }));
     if (isMaster) markMasterChangesPending();
     broadcastSync('SESSION_UPDATE');
   };
@@ -3272,8 +3607,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     broadcastSync('ALL_SYNC');
   };
 
-  // --- CRUD USUÁRIOS (COM SENHA PERSISTIDA) ---
+  // --- CRUD USUÁRIOS (COM SENHA PERSISTIDA E ISOLAMENTO NO MODO TESTE CORINGA) ---
   const addUser = (userData: Omit<StockUser, 'id' | 'createdAt'>) => {
+    if (isCoringa) return;
     if (isMaster && isAnyBaseCountInProgress) return;
 
     const now = new Date();
@@ -3282,14 +3618,21 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const masterName = activeUser?.name || 'Administrador Master';
     const createdAtStr = `${masterName} - ${dateFormatted} às ${timeFormatted}`;
 
+    const safeUserData = isCoringa
+      ? {
+          ...userData,
+          branch: userData.roleLevel === 'contador' ? toTestBranch(userData.branch) : undefined,
+        }
+      : userData;
+
     const newUser: StockUser = {
-      ...userData,
+      ...safeUserData,
       id: 'usr-' + Date.now(),
       createdAt: createdAtStr,
     };
     setUsers(prev => {
       const updated = [newUser, ...prev];
-      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(updated));
+      localStorage.setItem(isCoringa ? TEST_USERS_STORAGE_KEY : STORAGE_KEYS.USERS, JSON.stringify(updated));
       if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
       return updated;
@@ -3305,24 +3648,32 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const updateUser = (updatedUser: StockUser) => {
     if (isMaster && isAnyBaseCountInProgress) return;
+    if (isCoringaUser(updatedUser)) return; // Protege o usuário sistema CORINGA contra edição
+
+    const normalizedUser = isCoringa
+      ? {
+          ...updatedUser,
+          branch: updatedUser.roleLevel === 'contador' ? toTestBranch(updatedUser.branch) : undefined,
+        }
+      : updatedUser;
 
     setUsers(prev => {
-      const updated = prev.map(u => u.id === updatedUser.id ? updatedUser : u);
-      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(updated));
+      const updated = prev.map(u => u.id === normalizedUser.id ? normalizedUser : u);
+      localStorage.setItem(isCoringa ? TEST_USERS_STORAGE_KEY : STORAGE_KEYS.USERS, JSON.stringify(updated));
       if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
       return updated;
     });
-    if (activeUser && activeUser.id === updatedUser.id) {
-      setActiveUserState(updatedUser);
-      localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(updatedUser));
+    if (activeUser && activeUser.id === normalizedUser.id) {
+      setActiveUserState(normalizedUser);
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(normalizedUser));
     }
     addLog({
       type: 'edicao',
       targetType: 'usuario',
-      itemCode: updatedUser.registration,
-      title: `Usuário Editado: [${updatedUser.registration}]`,
-      description: `Dados de ${updatedUser.name} atualizados.`
+      itemCode: normalizedUser.registration,
+      title: `Usuário Editado: [${normalizedUser.registration}]`,
+      description: `Dados de ${normalizedUser.name} atualizados.`
     });
   };
 
@@ -3330,11 +3681,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (isMaster && isAnyBaseCountInProgress) return;
 
     const user = users.find(u => u.id === id);
-    if (!user) return;
+    if (!user || isCoringaUser(user)) return;
 
     setUsers(prev => {
       const updated = prev.filter(u => u.id !== id);
-      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(updated));
+      localStorage.setItem(isCoringa ? TEST_USERS_STORAGE_KEY : STORAGE_KEYS.USERS, JSON.stringify(updated));
       if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
       return updated;
@@ -3351,8 +3702,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       broadcastSync('SESSION_UPDATE');
     }
 
-    // Limpa quaisquer sessões do usuário em ambas as bases
-    (['PAULO AFONSO', 'DELMIRO'] as UnitBranch[]).forEach(b => {
+    // Limpa quaisquer sessões do usuário apenas nas respectivas bases (nunca toca bases reais em Modo Teste)
+    const branchesToClean = isCoringa ? TEST_BRANCHES : REAL_BRANCHES;
+    branchesToClean.forEach(b => {
       const branchSessionKey = getBranchStorageKey(b, 'active_contador_session');
       try {
         const stored = localStorage.getItem(branchSessionKey);
@@ -3491,9 +3843,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     targetStock?: 'materiais' | 'equipamentos' | 'ambos',
     targetBranch?: UnitBranch
   ) => {
-    const branchToUse = targetBranch || activeBranch;
-    const isTargetBranchInProgress =
-      branchToUse === 'PAULO AFONSO' ? isCountInProgressPA : isCountInProgressDEL;
+    const rawBranch = targetBranch || activeBranch;
+    const branchToUse = isCoringa ? toTestBranch(rawBranch) : rawBranch;
+    const isTargetBranchInProgress = !isCoringa && checkBranchInProgress(branchToUse);
     if (isMaster && isTargetBranchInProgress) {
       return { materialsAdded: 0, freezersAdded: 0, equipmentsAdded: 0, message: 'Existe contagem em andamento.' };
     }
@@ -3593,19 +3945,21 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     stock: 'materiais' | 'equipamentos' | 'ambos',
     branchTarget: UnitBranch | 'AMBAS' = activeBranch
   ) => {
-    if (isMaster) {
+    if (isMaster && !isCoringa) {
       const blocked = branchTarget === 'AMBAS'
         ? (isCountInProgressPA || isCountInProgressDEL)
-        : branchTarget === 'PAULO AFONSO'
-          ? isCountInProgressPA
-          : isCountInProgressDEL;
+        : checkBranchInProgress(branchTarget);
       if (blocked) return;
     }
 
-    const targetBranches: UnitBranch[] =
-      branchTarget === 'AMBAS' ? ['PAULO AFONSO', 'DELMIRO'] : [branchTarget];
+    const effectiveBranchList: UnitBranch[] = branchTarget === 'AMBAS'
+      ? (isCoringa ? [...TEST_BRANCHES] : [...REAL_BRANCHES])
+      : [isCoringa ? toTestBranch(branchTarget) : branchTarget];
 
-    targetBranches.forEach(branch => {
+    effectiveBranchList.forEach(branch => {
+      // Garantia extra: CORINGA jamais altera bases reais
+      if (isCoringa && !isTestBranch(branch)) return;
+
       // Remove prévia congelada para que a Prévia do Relatório atualize automaticamente
       localStorage.removeItem(getBranchStorageKey(branch, 'frozen_report'));
       if (branch === activeBranch) {
@@ -3637,7 +3991,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         : stock === 'equipamentos'
           ? 'Equipamentos'
           : 'Materiais e Equipamentos';
-    const branchLabel = branchTarget === 'AMBAS' ? 'PAULO AFONSO e DELMIRO' : branchTarget;
+    const branchLabel = branchTarget === 'AMBAS'
+      ? (isCoringa ? 'PAULO AFONSO (TESTE) e DELMIRO (TESTE)' : 'PAULO AFONSO e DELMIRO')
+      : (isCoringa ? toTestBranch(branchTarget) : branchTarget);
 
     addLog({
       type: 'exclusao',
@@ -3848,9 +4204,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return count;
   }, [materials, freezers, equipments, recontagemSelectedIds]);
 
-  // Bloqueio das demais telas (Materiais, Equipamentos e Exportar) para o Contador enquanto houver recontagem até Master zerar a contagem
+  // Bloqueio das demais telas (Materiais, Equipamentos e Exportar) para o Contador enquanto houver recontagem até Master zerar a contagem (nunca para CORINGA)
   const isRecontagemTabsBlockedForContador = useMemo(() => {
-    if (!activeUser || activeUser.roleLevel !== 'contador') return false;
+    if (!activeUser || activeUser.roleLevel !== 'contador' || isCoringaUser(activeUser)) return false;
     if (recontagemUnlocked) return true;
     const hasRecCounts =
       Object.values(recontagemMaterialCounts).some(hasMaterialEntryQuantity) ||
@@ -3876,6 +4232,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         serverEmailConfig,
         logs,
         isMaster,
+        isCoringa,
+        recloneTestBasesFromApp,
         activeContadorSession,
         isContadorActive,
         clearContadorSession,
@@ -3922,6 +4280,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         cloneLastEquipmentCount,
         cloneSelectiveCount,
         resetAllTodayCountsByMaster,
+        verifyCredentials,
         login,
         logout,
         setActiveUser,

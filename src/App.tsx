@@ -17,12 +17,14 @@ import { CadastrarFreezerModal } from './components/modals/CadastrarFreezerModal
 import { CadastrarEquipamentoModal } from './components/modals/CadastrarEquipamentoModal';
 
 import { MaterialItem, MaterialCategory, FreezerItem, EquipmentItem } from './types/inventory';
-import { Wifi, Battery, Signal, Lock, AlertTriangle, Check, X } from 'lucide-react';
+import { Wifi, Battery, Signal, Lock, AlertTriangle, Check, X, RefreshCw, ShieldCheck } from 'lucide-react';
 
 const AppContent: React.FC = () => {
   const { 
     activeUser, 
     isMaster, 
+    isCoringa,
+    recloneTestBasesFromApp,
     isContadorActive, 
     activeContadorSession, 
     clearContadorSession,
@@ -48,16 +50,18 @@ const AppContent: React.FC = () => {
   
   const [activeTab, setActiveTab] = useState<MainTab>('materiais');
 
-  // Ao logar como Contador ou quando houver recontagem ativa: abre direto na tela Recontagem
+  // Ao logar como Contador (exceto CORINGA em modo teste) ou quando houver recontagem ativa: abre direto na tela Recontagem
   React.useEffect(() => {
-    if (activeUser && activeUser.roleLevel === 'contador') {
+    if (activeUser && activeUser.roleLevel === 'contador' && !isCoringa) {
       if (recontagemUnlocked || isRecontagemTabsBlockedForContador) {
         setActiveTab('recontagem');
       } else {
         setActiveTab('materiais');
       }
+    } else if (activeUser && isCoringa) {
+      setActiveTab('materiais');
     }
-  }, [activeUser?.id, activeUser?.roleLevel, recontagemUnlocked, isRecontagemTabsBlockedForContador]);
+  }, [activeUser?.id, activeUser?.roleLevel, isCoringa, recontagemUnlocked, isRecontagemTabsBlockedForContador]);
 
   // Modals state: Material
   const [isCreateMaterialOpen, setIsCreateMaterialOpen] = useState(false);
@@ -144,6 +148,33 @@ const AppContent: React.FC = () => {
         {/* View Content Area */}
         <main className="flex-1 p-3.5 sm:p-4 overflow-y-auto bg-white">
           
+          {isCoringa && (
+            <div className="mb-3.5 p-3 bg-indigo-50 border-2 border-indigo-300 rounded-2xl shadow-xs text-indigo-950 flex items-center justify-between gap-2.5 flex-wrap animate-in fade-in">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-black text-indigo-950 leading-tight">
+                    MODO TESTE ISOLADO • CORINGA (9999)
+                  </p>
+                  <p className="text-[10px] text-indigo-800 mt-0.5 leading-snug">
+                    Bases teste clonadas localmente. Nenhuma ação sincroniza com o Firebase nem interfere nos usuários Master, Contadores ou bases reais.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={recloneTestBasesFromApp}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-black rounded-xl shadow-xs flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95 transition-all"
+                title="Reclonar todos os dados atuais das bases reais (PAULO AFONSO e DELMIRO) para as bases teste"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reclonar Bases do App</span>
+              </button>
+            </div>
+          )}
+
           {systemNotice && (
             <div className="mb-3.5 p-3 bg-emerald-50 border border-emerald-300 rounded-2xl shadow-xs text-emerald-950 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
               <div className="flex items-center gap-2 min-w-0">

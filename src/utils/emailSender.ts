@@ -88,6 +88,12 @@ export function inferSmtpConfig(email: string, userName?: string): SmtpConfig {
   };
 }
 
+export interface EmailAttachment {
+  filename: string;
+  contentBase64: string;
+  contentType: string;
+}
+
 export interface SendDirectEmailPayload {
   fromEmail: string;
   senderName?: string;
@@ -95,6 +101,7 @@ export interface SendDirectEmailPayload {
   subject: string;
   bodyText: string;
   htmlBody?: string;
+  attachments?: EmailAttachment[];
   smtpConfig?: SmtpConfig | ServerEmailConfig;
 }
 
@@ -252,6 +259,7 @@ export async function sendEmailDirectly(payload: SendDirectEmailPayload): Promis
         subject,
         text: bodyText,
         html: payload.htmlBody,
+        attachments: payload.attachments,
         smtp: {
           host,
           port,

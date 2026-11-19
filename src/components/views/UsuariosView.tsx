@@ -17,7 +17,7 @@ import {
   MapPin
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
-import { StockUser, UserRoleLevel, UnitBranch } from '../../types/inventory';
+import { StockUser, UserRoleLevel, UnitBranch, getSelectableBranches, isCoringaUser, toTestBranch } from '../../types/inventory';
 
 export const UsuariosView: React.FC = () => {
   const {
@@ -27,9 +27,12 @@ export const UsuariosView: React.FC = () => {
     deleteUser,
     activeUser,
     isMaster,
+    isCoringa,
     isContadorActive,
     isAnyBaseCountInProgress
   } = useInventory();
+
+  const selectableBranches = getSelectableBranches(isCoringa);
 
   const [toastMsg, setToastMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
@@ -51,11 +54,15 @@ export const UsuariosView: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [roleLevel, setRoleLevel] = useState<UserRoleLevel>('contador');
-  const [branch, setBranch] = useState<UnitBranch>('PAULO AFONSO');
+  const [branch, setBranch] = useState<UnitBranch>(selectableBranches[0]);
   const [status, setStatus] = useState<'ativo' | 'inativo'>('ativo');
   const [errorMsg, setErrorMsg] = useState('');
 
   const handleOpenCreate = () => {
+    if (isCoringa) {
+      showToast('Inclusão de novos usuários desabilitada para o contador CORINGA.', false);
+      return;
+    }
     if (isMaster && (isAnyBaseCountInProgress || isContadorActive)) {
       showToast('Existe contagem em andamento.', false);
       return;
@@ -66,13 +73,17 @@ export const UsuariosView: React.FC = () => {
     setPassword('');
     setShowPassword(false);
     setRoleLevel('contador');
-    setBranch('PAULO AFONSO');
+    setBranch(selectableBranches[0]);
     setStatus('ativo');
     setErrorMsg('');
     setIsModalOpen(true);
   };
 
   const handleOpenEdit = (user: StockUser) => {
+    if (isCoringa || isCoringaUser(user)) {
+      showToast('O usuário CORINGA (9999) é protegido e não pode ser editado.', false);
+      return;
+    }
     if (isMaster && (isAnyBaseCountInProgress || isContadorActive)) {
       showToast('Existe contagem em andamento.', false);
       return;
@@ -83,7 +94,7 @@ export const UsuariosView: React.FC = () => {
     setPassword(user.password || '');
     setShowPassword(false);
     setRoleLevel(user.roleLevel);
-    setBranch(user.branch || 'PAULO AFONSO');
+    setBranch(user.branch ? (isCoringa ? toTestBranch(user.branch) : user.branch) : selectableBranches[0]);
     setStatus(user.status);
     setErrorMsg('');
     setIsModalOpen(true);
@@ -91,6 +102,7 @@ export const UsuariosView: React.FC = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isCoringa) return;
     setErrorMsg('');
 
     const trimmedName = name.trim();
@@ -153,6 +165,11 @@ export const UsuariosView: React.FC = () => {
   };
 
   const handleDelete = (id: string, userName: string) => {
+    const targetUser = users.find(u => u.id === id);
+    if (isCoringaUser(targetUser)) {
+      showToast('O usuário CORINGA (9999) é protegido pelo sistema.', false);
+      return;
+    }
     if (isMaster && (isAnyBaseCountInProgress || isContadorActive)) {
       showToast('Existe contagem em andamento.', false);
       return;
@@ -161,9 +178,13 @@ export const UsuariosView: React.FC = () => {
     showToast(`Usuário "${userName}" e todas as suas informações foram excluídos com sucesso.`, true);
   };
 
+  // No modo CORINGA, exibe exclusivamente as informações do usuário CORINGA
+  const baseUsers = isCoringa ? users.filter(u => isCoringaUser(u)) : users;
+
   // EXIGÊNCIA 7: Ordenar os usuários cadastrados no App, por ordem crescente de matrícula e por ordem de nível de acesso, começando pelos usuários Master
-  const filteredUsers = users
+  const filteredUsers = baseUsers
     .filter(u => {
+      if (isCoringa) return true;
       const matchesSearch =
         u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         u.registration.toLowerCase().includes(searchTerm.toLowerCase());
@@ -178,13 +199,9 @@ export const UsuariosView: React.FC = () => {
 
   const formatUserCreatedAt = (raw: string) => {
     if (!raw) return 'Não registrado';
-    if (raw.includes('às') || raw.includes('/')) return raw;
-    try {
-      const [year, month, day] = raw.split('-');
-      return `${day}/${month}/${year}`;
-    } catch {
-      return raw;
-    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw;
+    const [year, month, day] = raw.trim().split('-');
+    return `${day}/${month}/${year}`;
   };
 
   return (
@@ -232,72 +249,85 @@ export const UsuariosView: React.FC = () => {
         <div>
           <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-1.5">
             <Users className="w-5 h-5 text-indigo-600" />
-            <span>Gestão de Usuários</span>
+            <span>{isCoringa ? 'Dados do Usuário (CORINGA)' : 'Gestão de Usuários'}</span>
           </h2>
         </div>
 
-        <button
-          onClick={handleOpenCreate}
-          disabled={isMaster && (isAnyBaseCountInProgress || isContadorActive)}
-          title={isMaster && (isAnyBaseCountInProgress || isContadorActive) ? 'Existe contagem em andamento.' : undefined}
-          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
-        >
-          <UserPlus className="w-4 h-4" />
-          <span>Novo Usuário</span>
-        </button>
+        {!isCoringa && (
+          <button
+            onClick={handleOpenCreate}
+            disabled={isMaster && (isAnyBaseCountInProgress || isContadorActive)}
+            title={isMaster && (isAnyBaseCountInProgress || isContadorActive) ? 'Existe contagem em andamento.' : undefined}
+            className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-md active:scale-95 transition-all cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Novo Usuário</span>
+          </button>
+        )}
       </div>
+
+      {isCoringa && (
+        <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-amber-950 text-xs flex items-center gap-2">
+          <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+          <span className="font-semibold">
+            No modo de testes <strong>CORINGA</strong>, apenas os dados do usuário CORINGA são exibidos. Inclusão de novos usuários e edição estão desabilitadas.
+          </span>
+        </div>
+      )}
 
       {/* =========================================================================
           LISTA E GESTÃO DE USUÁRIOS
           ========================================================================= */}
       <div className="space-y-2.5">
 
-        {/* Filtros e Busca */}
-        <div className="flex flex-col sm:flex-row gap-2">
-          <div className="relative flex-1">
-            <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              placeholder="Buscar por matrícula ou nome..."
-              className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 font-mono"
-            />
-          </div>
+        {/* Filtros e Busca (ocultos no modo CORINGA, pois exibe somente o usuário CORINGA) */}
+        {!isCoringa && (
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                placeholder="Buscar por matrícula ou nome..."
+                className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 font-mono"
+              />
+            </div>
 
-          <div className="flex gap-1.5 text-xs">
-            <button
-              onClick={() => setLevelFilter('all')}
-              className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
-                levelFilter === 'all'
-                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              Todos ({users.length})
-            </button>
-            <button
-              onClick={() => setLevelFilter('master')}
-              className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
-                levelFilter === 'master'
-                  ? 'bg-purple-600 text-white border-purple-500 shadow-xs'
-                  : 'bg-white border-slate-200 text-purple-700 hover:bg-slate-50'
-              }`}
-            >
-              1 - Master ({users.filter(u => u.roleLevel === 'master').length})
-            </button>
-            <button
-              onClick={() => setLevelFilter('contador')}
-              className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
-                levelFilter === 'contador'
-                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
-                  : 'bg-white border-slate-200 text-indigo-700 hover:bg-slate-50'
-              }`}
-            >
-              2 - Contador ({users.filter(u => u.roleLevel === 'contador').length})
-            </button>
+            <div className="flex gap-1.5 text-xs">
+              <button
+                onClick={() => setLevelFilter('all')}
+                className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                  levelFilter === 'all'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                Todos ({users.length})
+              </button>
+              <button
+                onClick={() => setLevelFilter('master')}
+                className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                  levelFilter === 'master'
+                    ? 'bg-purple-600 text-white border-purple-500 shadow-xs'
+                    : 'bg-white border-slate-200 text-purple-700 hover:bg-slate-50'
+                }`}
+              >
+                1 - Master ({users.filter(u => u.roleLevel === 'master').length})
+              </button>
+              <button
+                onClick={() => setLevelFilter('contador')}
+                className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                  levelFilter === 'contador'
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                    : 'bg-white border-slate-200 text-indigo-700 hover:bg-slate-50'
+                }`}
+              >
+                2 - Contador ({users.filter(u => u.roleLevel === 'contador').length})
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Lista de Usuários */}
         <div className="space-y-2">
@@ -308,11 +338,16 @@ export const UsuariosView: React.FC = () => {
           ) : (
             filteredUsers.map(user => {
               const isLoggedUser = activeUser?.id === user.id;
+              const isCoringaCard = isCoringaUser(user);
 
               return (
                 <div
                   key={user.id}
-                  className="bg-white border border-slate-200 rounded-2xl p-3.5 flex items-center justify-between gap-3 transition-all hover:border-slate-300 shadow-xs"
+                  className={`border rounded-2xl p-3.5 flex items-center justify-between gap-3 transition-all shadow-xs ${
+                    isCoringaCard
+                      ? 'bg-amber-50/40 border-amber-300 hover:border-amber-400'
+                      : 'bg-white border-slate-200 hover:border-slate-300'
+                  }`}
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -320,19 +355,29 @@ export const UsuariosView: React.FC = () => {
                         MATRÍCULA: {user.registration}
                       </span>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                        user.roleLevel === 'master'
-                          ? 'bg-purple-50 text-purple-700 border-purple-200'
-                          : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        isCoringaCard
+                          ? 'bg-amber-100 text-amber-950 border-amber-300'
+                          : user.roleLevel === 'master'
+                            ? 'bg-purple-50 text-purple-700 border-purple-200'
+                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
                       }`}>
-                        {user.roleLevel === 'master' ? '1 - Master (Exige Senha)' : '2 - Contador (Sem Senha)'}
+                        {isCoringaCard
+                          ? '2 - Contador • Acesso Total (Teste)'
+                          : user.roleLevel === 'master'
+                            ? '1 - Master (Exige Senha)'
+                            : '2 - Contador (Sem Senha)'}
                       </span>
-                      {user.roleLevel === 'contador' ? (
+                      {isCoringaCard ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-indigo-50 text-indigo-900 border-indigo-200">
+                          Modo Teste Isolado (Sem Firebase)
+                        </span>
+                      ) : user.roleLevel === 'contador' ? (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-amber-50 text-amber-900 border-amber-300">
                           Base: {user.branch || 'PAULO AFONSO'}
                         </span>
                       ) : (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-slate-100 text-slate-800 border-slate-300">
-                          Acesso: PAULO AFONSO e DELMIRO
+                          Acesso: {selectableBranches.join(' e ')}
                         </span>
                       )}
                       {isLoggedUser && (
@@ -347,7 +392,12 @@ export const UsuariosView: React.FC = () => {
                     </h4>
 
                     <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
-                      {user.roleLevel === 'master' ? (
+                      {isCoringaCard ? (
+                        <span className="text-indigo-800 font-semibold flex items-center gap-1">
+                          <ShieldCheck className="w-3 h-3 text-indigo-600" />
+                          Acesso total nas bases teste clonadas (sem senha, sem Firebase e sem interferência na produção)
+                        </span>
+                      ) : user.roleLevel === 'master' ? (
                         <span className="flex items-center gap-1 font-mono text-slate-700">
                           <Lock className="w-3 h-3 text-purple-500" />
                           Senha: <span className="text-purple-800 font-bold">{user.password}</span>
@@ -364,21 +414,29 @@ export const UsuariosView: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => handleOpenEdit(user)}
-                      className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-                      title="Editar usuário"
-                    >
-                      <Edit3 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(user.id, user.name)}
-                      disabled={isLoggedUser && users.length === 1}
-                      className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-colors disabled:opacity-40 cursor-pointer"
-                      title="Excluir usuário"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {isCoringaCard ? (
+                      <span className="px-2 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-black">
+                        Protegido
+                      </span>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => handleOpenEdit(user)}
+                          className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                          title="Editar usuário"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(user.id, user.name)}
+                          disabled={isLoggedUser && users.length === 1}
+                          className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-colors disabled:opacity-40 cursor-pointer"
+                          title="Excluir usuário"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -391,7 +449,7 @@ export const UsuariosView: React.FC = () => {
       {/* =========================================================================
           MODAL DE CADASTRO / EDIÇÃO DE USUÁRIO
           ========================================================================= */}
-      {isModalOpen && (
+      {!isCoringa && isModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150">
           <div className="bg-white border border-slate-200 w-full max-w-md rounded-3xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl text-slate-900">
 
@@ -532,28 +590,22 @@ export const UsuariosView: React.FC = () => {
                       Permitir acesso à contagem referente à base selecionada:
                     </p>
                     <div className="grid grid-cols-2 gap-2 pt-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setBranch('PAULO AFONSO')}
-                        className={`p-2.5 rounded-xl border text-center text-xs font-black transition-all cursor-pointer ${
-                          branch === 'PAULO AFONSO'
-                            ? 'bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-300 shadow-xs scale-[1.02]'
-                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        PAULO AFONSO
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setBranch('DELMIRO')}
-                        className={`p-2.5 rounded-xl border text-center text-xs font-black transition-all cursor-pointer ${
-                          branch === 'DELMIRO'
-                            ? 'bg-slate-900 text-white border-slate-800 ring-2 ring-slate-400 shadow-xs scale-[1.02]'
-                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        DELMIRO
-                      </button>
+                      {selectableBranches.map((branchOpt, idx) => (
+                        <button
+                          key={branchOpt}
+                          type="button"
+                          onClick={() => setBranch(branchOpt)}
+                          className={`p-2.5 rounded-xl border text-center text-xs font-black transition-all cursor-pointer ${
+                            branch === branchOpt
+                              ? idx === 0
+                                ? 'bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-300 shadow-xs scale-[1.02]'
+                                : 'bg-slate-900 text-white border-slate-800 ring-2 ring-slate-400 shadow-xs scale-[1.02]'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          {branchOpt}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>

@@ -20,7 +20,7 @@ import {
   Users
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
-import { MaterialItem, FreezerItem, EquipmentItem, MaterialDailyEntry, EquipmentDailyEntry } from '../../types/inventory';
+import { MaterialItem, FreezerItem, EquipmentItem, MaterialDailyEntry, EquipmentDailyEntry, isCoringaUser } from '../../types/inventory';
 import { generateStockReportText, generateStockReportEmailTableText, generateStockReportHtml } from '../../utils/reportGenerator';
 import { sendEmailDirectly } from '../../utils/emailSender';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
@@ -30,6 +30,7 @@ export const RecontagemView: React.FC = () => {
     activeUser,
     users,
     isMaster,
+    isCoringa,
     activeBranch,
     materials,
     freezers,
@@ -82,10 +83,10 @@ export const RecontagemView: React.FC = () => {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Lista de usuários contadores ativos pertencentes à base atualmente logada
+  // Lista de usuários contadores ativos pertencentes à base atualmente logada (nunca inclui CORINGA)
   const branchContadores = useMemo(() => {
     return users
-      .filter(u => u.roleLevel === 'contador' && u.status === 'ativo' && u.branch === activeBranch)
+      .filter(u => u.roleLevel === 'contador' && !isCoringaUser(u) && u.status === 'ativo' && u.branch === activeBranch)
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR', { sensitivity: 'base' }));
   }, [users, activeBranch]);
 
@@ -1181,7 +1182,9 @@ export const RecontagemView: React.FC = () => {
             ) : recontagemSelectedCount > 0 ? (
               <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-950 leading-relaxed font-bold">
                 {hasCountReceived
-                  ? `${recontagemSelectedCount} item(ns) marcado(s) na base ${activeBranch}. Clique em "Liberar Recontagem para o Contador Inicial" abaixo para enviar a seleção ao Firebase e liberar o acesso ao contador.`
+                  ? isCoringa
+                    ? `${recontagemSelectedCount} item(ns) marcado(s) na base teste ${activeBranch}. Clique em "Liberar Recontagem para o Contador Inicial" abaixo para testar localmente (sem Firebase).`
+                    : `${recontagemSelectedCount} item(ns) marcado(s) na base ${activeBranch}. Clique em "Liberar Recontagem para o Contador Inicial" abaixo para enviar a seleção ao Firebase e liberar o acesso ao contador.`
                   : `${recontagemSelectedCount} item(ns) selecionado(s) sem contagem inicial na base ${activeBranch}. Selecione o usuário contador abaixo para habilitar a liberação.`}
               </div>
             ) : (

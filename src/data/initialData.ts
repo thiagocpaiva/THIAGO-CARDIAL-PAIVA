@@ -32,6 +32,18 @@ export const INITIAL_SERVER_EMAIL_CONFIG: ServerEmailConfig = {
   testedAt: '09/10/2026',
 };
 
+export const CORINGA_USER: StockUser = {
+  id: 'usr-contador-coringa',
+  registration: '9999',
+  name: 'CORINGA',
+  password: '',
+  roleLevel: 'contador',
+  branch: 'PAULO AFONSO (TESTE)',
+  status: 'ativo',
+  isTestUser: true,
+  createdAt: 'Sistema - Modo Teste Isolado',
+};
+
 export const INITIAL_USERS: StockUser[] = [
   {
     id: 'usr-master-1',
@@ -61,7 +73,8 @@ export const INITIAL_USERS: StockUser[] = [
     branch: 'DELMIRO',
     status: 'ativo',
     createdAt: 'Administrador Master - 08/10/2026 às 08:35',
-  }
+  },
+  CORINGA_USER,
 ];
 
 export const INITIAL_EMAIL_SETTINGS: EmailSettings = {

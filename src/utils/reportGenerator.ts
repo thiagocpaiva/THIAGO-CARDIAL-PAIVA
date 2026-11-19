@@ -1,3 +1,5 @@
+import { jsPDF } from 'jspdf';
+import autoTable, { RowInput } from 'jspdf-autotable';
 import {
   MaterialItem,
   FreezerItem,
@@ -6,7 +8,55 @@ import {
   MaterialDailyEntry,
   EquipmentDailyEntry,
   StockUser,
+  UnitBranch,
+  getBranchFileSlug,
 } from '../types/inventory';
+import { GRUPO_MS_LOGO_PATH } from '../components/common/GrupoMSBrand';
+
+let cachedGrupoMsLogoDataUrl: string | null = null;
+let logoPreloadPromise: Promise<string | null> | null = null;
+
+/**
+ * Pré-carrega a logomarca oficial "GRUPO MS" da tela de login em Base64
+ * para garantir exibição fiel no relatório exportado em PDF e no corpo do e-mail.
+ */
+export function preloadGrupoMsLogoDataUrl(): Promise<string | null> {
+  if (cachedGrupoMsLogoDataUrl) return Promise.resolve(cachedGrupoMsLogoDataUrl);
+  if (logoPreloadPromise) return logoPreloadPromise;
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') {
+    return Promise.resolve(null);
+  }
+
+  const candidates = [GRUPO_MS_LOGO_PATH, '/logo-grupo-ms.png'];
+  logoPreloadPromise = (async () => {
+    for (const path of candidates) {
+      try {
+        const res = await fetch(path);
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(String(reader.result || ''));
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        if (dataUrl.startsWith('data:image')) {
+          cachedGrupoMsLogoDataUrl = dataUrl;
+          return dataUrl;
+        }
+      } catch {
+        // tenta próximo caminho
+      }
+    }
+    return null;
+  })();
+
+  return logoPreloadPromise;
+}
+
+if (typeof window !== 'undefined') {
+  preloadGrupoMsLogoDataUrl().catch(() => {});
+}
 
 export interface GenerateReportParams {
   selectedStock: 'materiais' | 'equipamentos' | 'ambos';
@@ -839,9 +889,8 @@ function renderAsciiTable(
 }
 
 /**
- * Gera a versão do relatório integralmente formatada como TABELAS em texto estruturado
- * para inserção limpa no corpo do e-mail (mailto:?body=... e fallback plain-text),
- * mantendo o ESTOQUE CONSOLIDADO como primeira informação do relatório.
+ * Gera a versão do relatório em tabelas no mesmo formato, ordem, cabeçalhos e colunas
+ * da exportação em PDF (generateStockReportHtml), pronta para envio no corpo do e-mail.
  */
 export function generateStockReportEmailTableText(params: GenerateReportParams): string {
   const {
@@ -849,106 +898,109 @@ export function generateStockReportEmailTableText(params: GenerateReportParams):
     todayDateFormatted,
     activeUser,
     includeEquipmentDefects = true,
+    isMobile = false,
     isRecontagem = false,
   } = params;
 
   const data = buildStructuredReportData(params);
   const lines: string[] = [];
 
-  lines.push(`GRUPO MS - ${isRecontagem ? 'RELATÓRIO DE RECONTAGEM DE ESTOQUE' : 'CONTAGEM DE ESTOQUE'}`);
-  lines.push('Gestão de Materiais & Equipamentos');
-  lines.push('');
+  // Larguras adaptadas para leitura limpa no corpo do e-mail em desktop e celular
+  const wCode = isMobile ? 8 : 10;
+  const wQty = isMobile ? 8 : 11;
+  const wDesc3 = isMobile ? 28 : 42;
 
-  const metaRows: string[][] = [
-    [`DATA DA ${isRecontagem ? 'RECONTAGEM' : 'CONTAGEM'}`, todayDateFormatted],
-  ];
+  lines.push('GRUPO MS');
+  lines.push(isRecontagem ? 'RELATÓRIO DE RECONTAGEM DE ESTOQUE' : 'CONTAGEM DE ESTOQUE');
+  lines.push('Gestão de Materiais & Equipamentos');
+  lines.push(`Data da ${isRecontagem ? 'Recontagem' : 'Contagem'}: ${todayDateFormatted}`);
   if (params.branch) {
-    metaRows.push(['BASE / UNIDADE', params.branch]);
+    lines.push(`Base / Unidade: ${params.branch}`);
   }
   if (activeUser) {
-    metaRows.push(['CONFERENTE RESPONSÁVEL', activeUser.name]);
+    lines.push(`Conferente: ${activeUser.name}`);
   }
-  metaRows.push(['ESTOQUE SELECIONADO', data.stockLabel]);
-  metaRows.push(['SITUAÇÃO', isRecontagem ? 'Relatório Oficial de Recontagem' : 'Relatório da Contagem']);
-
-  lines.push(
-    ...renderAsciiTable(
-      [
-        { header: 'INFORMAÇÃO', width: 24, align: 'left' },
-        { header: 'DADOS DA CONTAGEM', width: 42, align: 'left' },
-      ],
-      metaRows
-    )
-  );
+  lines.push(`Estoque: ${data.stockLabel}`);
   lines.push('');
 
   // =========================================================
-  // 1ª INFORMAÇÃO: TABELAS DE ESTOQUE CONSOLIDADO
+  // 1ª INFORMAÇÃO DO RELATÓRIO: ESTOQUE CONSOLIDADO (IDÊNTICO AO PDF)
   // =========================================================
+  lines.push('ESTOQUE CONSOLIDADO');
+
   if (selectedStock === 'materiais' || selectedStock === 'ambos') {
-    lines.push('ESTOQUE CONSOLIDADO - MATERIAIS');
-    lines.push(
-      ...renderAsciiTable(
-        [
-          { header: 'CÓDIGO', width: 10, align: 'left' },
-          { header: 'DESCRIÇÃO DO MATERIAL', width: 40, align: 'left' },
-          { header: 'SALDO', width: 10, align: 'right' },
-        ],
-        data.consolidadoMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-        ['TOTAL', 'TOTAL GERAL DE MATERIAIS', `${data.totalGeralMateriais} un`]
-      )
-    );
+    if (data.consolidadoMatRows.length > 0) {
+      lines.push('ESTOQUE CONSOLIDADO: MATERIAIS');
+      lines.push(
+        ...renderAsciiTable(
+          [
+            { header: 'Código', width: wCode, align: 'left' },
+            { header: 'Descrição do Item', width: wDesc3, align: 'left' },
+            { header: 'Quantidade', width: wQty, align: 'right' },
+          ],
+          data.consolidadoMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
+          ['TOTAL', 'TOTAL GERAL DE MATERIAIS:', `${data.totalGeralMateriais} un`]
+        )
+      );
+    } else {
+      lines.push('ESTOQUE CONSOLIDADO (MATERIAIS): Nenhum material contado até o momento.');
+    }
     lines.push('');
   }
 
   if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
-    lines.push(`ESTOQUE CONSOLIDADO - EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}`);
-    lines.push(
-      ...renderAsciiTable(
-        [
-          { header: 'CÓDIGO', width: 10, align: 'left' },
-          { header: 'DESCRIÇÃO DO EQUIPAMENTO', width: 40, align: 'left' },
-          { header: 'QTD', width: 10, align: 'right' },
-        ],
-        data.consolidadoEquipRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-        ['TOTAL', `TOTAL GERAL DE EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}`, `${data.totalEquipamentosGeral} un`]
-      )
-    );
+    if (data.totalEquipamentosGeral > 0) {
+      lines.push(`ESTOQUE CONSOLIDADO: EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}`);
+      lines.push(
+        ...renderAsciiTable(
+          [
+            { header: 'Código', width: wCode, align: 'left' },
+            { header: 'Descrição do Equipamento', width: wDesc3, align: 'left' },
+            { header: 'Quantidade', width: wQty, align: 'right' },
+          ],
+          data.consolidadoEquipRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
+          ['TOTAL', `TOTAL GERAL DE EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}:`, `${data.totalEquipamentosGeral} un`]
+        )
+      );
+    } else {
+      lines.push('ESTOQUE CONSOLIDADO (EQUIPAMENTOS): Nenhum equipamento contado até o momento.');
+    }
     lines.push('');
   }
 
   // =========================================================
-  // DETALHAMENTO EM TABELAS: MATERIAIS
+  // DETALHAMENTO: ESTOQUE DE MATERIAIS (DETALHADO) (IDÊNTICO AO PDF)
   // =========================================================
   if (selectedStock === 'materiais' || selectedStock === 'ambos') {
-    lines.push('DETALHAMENTO - ESTOQUE DE MATERIAIS');
-    lines.push('');
+    lines.push('ESTOQUE DE MATERIAIS (DETALHADO)');
 
-    lines.push('1 ITENS DISPONÍVEIS');
-    lines.push(
-      ...renderAsciiTable(
-        [
-          { header: 'CÓDIGO', width: 10, align: 'left' },
-          { header: 'DESCRIÇÃO DO MATERIAL', width: 40, align: 'left' },
-          { header: 'QTD', width: 10, align: 'right' },
-        ],
-        data.dispMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-        ['SUBTOTAL', 'Subtotal Disponíveis', `${data.subtotalMatDisp} un`]
-      )
-    );
-    lines.push('');
+    if (data.dispMatRows.length > 0) {
+      lines.push('1 ITENS DISPONÍVEIS');
+      lines.push(
+        ...renderAsciiTable(
+          [
+            { header: 'Código', width: wCode, align: 'left' },
+            { header: 'Descrição do Material', width: wDesc3, align: 'left' },
+            { header: 'Quantidade', width: wQty, align: 'right' },
+          ],
+          data.dispMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
+          ['SUBTOTAL', 'Subtotal Disponíveis:', `${data.subtotalMatDisp} un`]
+        )
+      );
+      lines.push('');
+    }
 
     if (data.danifMatRows.length > 0) {
       lines.push('2 ITENS DANIFICADOS');
       lines.push(
         ...renderAsciiTable(
           [
-            { header: 'CÓDIGO', width: 10, align: 'left' },
-            { header: 'DESCRIÇÃO DO MATERIAL', width: 40, align: 'left' },
-            { header: 'QTD', width: 10, align: 'right' },
+            { header: 'Código', width: wCode, align: 'left' },
+            { header: 'Descrição do Material', width: wDesc3, align: 'left' },
+            { header: 'Quantidade', width: wQty, align: 'right' },
           ],
           data.danifMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-          ['SUBTOTAL', 'Subtotal Danificados', `${data.subtotalMatDanif} un`]
+          ['SUBTOTAL', 'Subtotal Danificados:', `${data.subtotalMatDanif} un`]
         )
       );
       lines.push('');
@@ -959,13 +1011,13 @@ export function generateStockReportEmailTableText(params: GenerateReportParams):
       lines.push(
         ...renderAsciiTable(
           [
-            { header: 'CÓDIGO', width: 10, align: 'left' },
-            { header: 'DESCRIÇÃO', width: 28, align: 'left' },
-            { header: 'SITUAÇÃO', width: 10, align: 'left' },
-            { header: 'QTD', width: 8, align: 'right' },
+            { header: 'Código', width: wCode, align: 'left' },
+            { header: 'Descrição do Material', width: isMobile ? 19 : 30, align: 'left' },
+            { header: 'Situação', width: isMobile ? 9 : 11, align: 'left' },
+            { header: 'Quantidade', width: wQty, align: 'right' },
           ],
           data.vazioRotaRows.map(r => [`[${r.code}]`, r.name, r.situation, `${r.quantity} un`]),
-          ['SUBTOTAL', 'Subtotal Vazio/Rota', '', `${data.subtotalMatVazioRota} un`]
+          ['SUBTOTAL', 'Subtotal Vazio e Em Rota:', '', `${data.subtotalMatVazioRota} un`]
         )
       );
       lines.push('');
@@ -973,137 +1025,144 @@ export function generateStockReportEmailTableText(params: GenerateReportParams):
   }
 
   // =========================================================
-  // DETALHAMENTO EM TABELAS: EQUIPAMENTOS
+  // DETALHAMENTO: ESTOQUE DE EQUIPAMENTOS (DETALHADO) (IDÊNTICO AO PDF)
   // =========================================================
   if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
-    lines.push('DETALHAMENTO - ESTOQUE DE EQUIPAMENTOS');
-    lines.push('');
-
     if (isRecontagem) {
-      lines.push('1 EQUIPAMENTOS EM ESTOQUE');
-      lines.push(
-        ...renderAsciiTable(
-          [
-            { header: 'CÓDIGO', width: 10, align: 'left' },
-            { header: 'PATRIMÔNIO', width: 12, align: 'left' },
-            { header: 'DESCRIÇÃO / ESPECIFICAÇÕES', width: 38, align: 'left' },
-          ],
-          data.emEstoqueEquips.map(eq => [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs]),
-          ['SUBTOTAL', 'Em Estoque', `${data.emEstoqueEquips.length} un`]
-        )
-      );
-      lines.push('');
+      lines.push('ESTOQUE DE EQUIPAMENTOS (RECONTAGEM - DETALHADO)');
+
+      if (data.emEstoqueEquips.length > 0) {
+        lines.push('1 EQUIPAMENTOS EM ESTOQUE');
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 10 : 12, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 26 : 41, align: 'left' },
+            ],
+            data.emEstoqueEquips.map(eq => [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs]),
+            ['SUBTOTAL', 'Subtotal Em Estoque:', `${data.emEstoqueEquips.length} un`]
+          )
+        );
+        lines.push('');
+      }
 
       if (data.naoConstaEquips.length > 0) {
         lines.push('2 EQUIPAMENTOS NÃO CONSTAM EM ESTOQUE');
         lines.push(
           ...renderAsciiTable(
             [
-              { header: 'CÓDIGO', width: 10, align: 'left' },
-              { header: 'PATRIMÔNIO', width: 12, align: 'left' },
-              { header: 'DESCRIÇÃO / ESPECIFICAÇÕES', width: 38, align: 'left' },
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 10 : 12, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 26 : 41, align: 'left' },
             ],
             data.naoConstaEquips.map(eq => [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs]),
-            ['SUBTOTAL', 'Não Constam', `${data.naoConstaEquips.length} un`]
+            ['SUBTOTAL', 'Subtotal Não Constam em Estoque:', `${data.naoConstaEquips.length} un`]
           )
         );
         lines.push('');
       }
     } else {
-      lines.push('1 ITENS DISPONÍVEIS');
-      const dispCols: TableColumnSpec[] = includeEquipmentDefects
-        ? [
-            { header: 'CÓDIGO', width: 9, align: 'left' },
-            { header: 'PATRIM.', width: 10, align: 'left' },
-            { header: 'DESCRIÇÃO / ESPECIFICAÇÕES', width: 25, align: 'left' },
-            { header: 'OBS', width: 15, align: 'left' },
-          ]
-        : [
-            { header: 'CÓDIGO', width: 10, align: 'left' },
-            { header: 'PATRIMÔNIO', width: 12, align: 'left' },
-            { header: 'DESCRIÇÃO / ESPECIFICAÇÕES', width: 38, align: 'left' },
-          ];
-      const dispRows = data.dispEquips.map(eq =>
-        includeEquipmentDefects
-          ? [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs, eq.observations?.trim() || '-']
-          : [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs]
-      );
-      const dispFooter = includeEquipmentDefects
-        ? ['SUBTOTAL', 'Disponíveis', '', `${data.dispEquips.length} un`]
-        : ['SUBTOTAL', 'Disponíveis', `${data.dispEquips.length} un`];
-      lines.push(...renderAsciiTable(dispCols, dispRows, dispFooter));
-      lines.push('');
+      lines.push('ESTOQUE DE EQUIPAMENTOS (DETALHADO)');
+
+      if (data.dispEquips.length > 0) {
+        lines.push('1 ITENS DISPONÍVEIS');
+        const dispCols: TableColumnSpec[] = includeEquipmentDefects
+          ? [
+              { header: 'Código', width: isMobile ? 8 : 9, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 9 : 11, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 18 : 28, align: 'left' },
+              { header: 'Observações', width: isMobile ? 13 : 18, align: 'left' },
+            ]
+          : [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 10 : 12, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 26 : 41, align: 'left' },
+            ];
+        const dispRows = data.dispEquips.map(eq =>
+          includeEquipmentDefects
+            ? [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs, eq.observations?.trim() || '-']
+            : [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs]
+        );
+        const dispFooter = includeEquipmentDefects
+          ? ['SUBTOTAL', 'Subtotal Disponíveis:', '', `${data.dispEquips.length} un`]
+          : ['SUBTOTAL', 'Subtotal Disponíveis:', `${data.dispEquips.length} un`];
+        lines.push(...renderAsciiTable(dispCols, dispRows, dispFooter));
+        lines.push('');
+      }
 
       if (data.danifEquips.length > 0) {
         lines.push('2 ITENS DANIFICADOS');
         const danifCols: TableColumnSpec[] = includeEquipmentDefects
           ? [
-              { header: 'CÓDIGO', width: 9, align: 'left' },
-              { header: 'PATRIM.', width: 10, align: 'left' },
-              { header: 'DESCRIÇÃO', width: 21, align: 'left' },
-              { header: 'DEFEITO / OBS', width: 19, align: 'left' },
+              { header: 'Código', width: isMobile ? 8 : 9, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 9 : 11, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 15 : 22, align: 'left' },
+              { header: 'Defeito', width: isMobile ? 11 : 15, align: 'left' },
+              { header: 'Observações', width: isMobile ? 10 : 14, align: 'left' },
             ]
           : [
-              { header: 'CÓDIGO', width: 10, align: 'left' },
-              { header: 'PATRIMÔNIO', width: 12, align: 'left' },
-              { header: 'DESCRIÇÃO / ESPECIFICAÇÕES', width: 38, align: 'left' },
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 10 : 12, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 26 : 41, align: 'left' },
             ];
         const danifRows = data.danifEquips.map(eq => {
           if (!includeEquipmentDefects) {
             return [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs];
           }
-          const notes = [
-            eq.damageDescription ? `Def: ${eq.damageDescription}` : '',
-            eq.observations?.trim() ? `Obs: ${eq.observations.trim()}` : '',
-          ]
-            .filter(Boolean)
-            .join(' | ') || '-';
-          return [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs, notes];
+          return [
+            eq.code ? `[${eq.code}]` : '-',
+            eq.patrimony,
+            eq.fullNameWithSpecs,
+            eq.damageDescription || '-',
+            eq.observations?.trim() || '-',
+          ];
         });
         const danifFooter = includeEquipmentDefects
-          ? ['SUBTOTAL', 'Danificados', '', `${data.danifEquips.length} un`]
-          : ['SUBTOTAL', 'Danificados', `${data.danifEquips.length} un`];
+          ? ['SUBTOTAL', 'Subtotal Danificados:', '', '', `${data.danifEquips.length} un`]
+          : ['SUBTOTAL', 'Subtotal Danificados:', `${data.danifEquips.length} un`];
         lines.push(...renderAsciiTable(danifCols, danifRows, danifFooter));
         lines.push('');
       }
-    }
 
-    if (data.uncatEquips.length > 0) {
-      lines.push('3 EQUIPAMENTOS NÃO CADASTRADOS (ENCONTRADOS NA CONTAGEM)');
-      const uncatCols: TableColumnSpec[] = includeEquipmentDefects
-        ? [
-            { header: 'CÓDIGO', width: 10, align: 'left' },
-            { header: 'PATRIM.', width: 10, align: 'left' },
-            { header: 'IDENTIFICAÇÃO', width: 21, align: 'left' },
-            { header: 'DEFEITO / OBS', width: 18, align: 'left' },
-          ]
-        : [
-            { header: 'CÓDIGO', width: 10, align: 'left' },
-            { header: 'PATRIMÔNIO', width: 12, align: 'left' },
-            { header: 'DESCRIÇÃO / IDENTIFICAÇÃO', width: 38, align: 'left' },
+      if (data.uncatEquips.length > 0) {
+        lines.push('3 EQUIPAMENTOS NÃO CADASTRADOS (ENCONTRADOS NA CONTAGEM)');
+        const uncatCols: TableColumnSpec[] = includeEquipmentDefects
+          ? [
+              { header: 'Código', width: isMobile ? 9 : 10, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 9 : 11, align: 'left' },
+              { header: 'Descrição / Identificação', width: isMobile ? 15 : 22, align: 'left' },
+              { header: 'Defeito', width: isMobile ? 11 : 15, align: 'left' },
+              { header: 'Observações', width: isMobile ? 10 : 14, align: 'left' },
+            ]
+          : [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Patrimônio', width: isMobile ? 10 : 12, align: 'left' },
+              { header: 'Descrição / Identificação', width: isMobile ? 26 : 41, align: 'left' },
+            ];
+        const uncatRows = data.uncatEquips.map(u => {
+          const codeStr = u.code && u.code !== '0' ? `[${u.code}]` : '[NÃO-CAD]';
+          if (!includeEquipmentDefects) {
+            return [codeStr, u.patrimony, u.fullNameWithSpecs];
+          }
+          return [
+            codeStr,
+            u.patrimony,
+            u.fullNameWithSpecs,
+            u.damageDescription || '-',
+            u.observations?.trim() || '-',
           ];
-      const uncatRows = data.uncatEquips.map(u => {
-        const codeStr = u.code && u.code !== '0' ? `[${u.code}]` : '[NÃO-CAD]';
-        if (!includeEquipmentDefects) {
-          return [codeStr, u.patrimony, u.fullNameWithSpecs];
-        }
-        const notes = [
-          u.damageDescription ? `Def: ${u.damageDescription}` : '',
-          u.observations?.trim() ? `Obs: ${u.observations.trim()}` : '',
-        ]
-          .filter(Boolean)
-          .join(' | ') || '-';
-        return [codeStr, u.patrimony, u.fullNameWithSpecs, notes];
-      });
-      const uncatFooter = includeEquipmentDefects
-        ? ['SUBTOTAL', 'Não Cad.', '', `${data.uncatEquips.length} un`]
-        : ['SUBTOTAL', 'Não Cad.', `${data.uncatEquips.length} un`];
-      lines.push(...renderAsciiTable(uncatCols, uncatRows, uncatFooter));
-      lines.push('');
+        });
+        const uncatFooter = includeEquipmentDefects
+          ? ['SUBTOTAL', 'Subtotal Não Cadastrados:', '', '', `${data.uncatEquips.length} un`]
+          : ['SUBTOTAL', 'Subtotal Não Cadastrados:', `${data.uncatEquips.length} un`];
+        lines.push(...renderAsciiTable(uncatCols, uncatRows, uncatFooter));
+        lines.push('');
+      }
     }
   }
 
-  lines.push('Relatório gerado pelo App CONTAGEM DE MATERIAIS & EQUIPAMENTOS do Grupo MS.');
+  lines.push('Relatório Oficial de Contagem emitido pelo aplicativo CONTAGEM DE MATERIAIS & EQUIPAMENTOS do Grupo MS.');
   return lines.join('\n');
 }
 
@@ -1532,6 +1591,10 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
     }
   }
 
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const primaryLogoSrc = cachedGrupoMsLogoDataUrl || `${origin}${GRUPO_MS_LOGO_PATH}`;
+  const fallbackLogoSrc = `${origin}/logo-grupo-ms.png`;
+
   return `
 <!DOCTYPE html>
 <html>
@@ -1543,11 +1606,11 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
 <body style="margin: 0; padding: 16px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b;">
   <div style="max-width: 860px; margin: 0 auto; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
     
-    <!-- CABEÇALHO COM LOGO GRUPO MS AO LADO ESQUERDO -->
+    <!-- CABEÇALHO COM LOGO GRUPO MS DA TELA DE LOGIN AO LADO ESQUERDO -->
     <table width="100%" cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-bottom: 24px; border-bottom: 3px solid #059669; padding-bottom: 16px;">
       <tr>
         <td align="left" valign="middle" style="padding-bottom: 16px; width: 45%;">
-          <img src="https://grupoms.com/wp-content/uploads/2023/12/logo-grupo-ms-1.png" alt="GRUPO MS" width="180" style="display: block; max-width: 180px; width: 180px; height: auto; border: 0;" />
+          <img src="${primaryLogoSrc}" onerror="if(this.src!=='${fallbackLogoSrc}'){this.src='${fallbackLogoSrc}';}" alt="GRUPO MS" style="display: block; max-height: 90px; max-width: 200px; width: auto; height: auto; border: 0;" />
         </td>
         <td align="right" valign="middle" style="padding-bottom: 16px; width: 55%; text-align: right; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
           <div style="font-size: 18px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">${isRecontagem ? 'RELATÓRIO DE RECONTAGEM DE ESTOQUE' : 'CONTAGEM DE ESTOQUE'}</div>
@@ -1572,3 +1635,907 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
 </html>
   `.trim();
 }
+
+export interface GeneratedPdfReport {
+  blob: Blob;
+  file: File;
+  fileName: string;
+  base64: string;
+}
+
+interface NormalizedLogoAsset {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+async function normalizeLogoToPngDataUrl(rawDataUrl: string | null): Promise<NormalizedLogoAsset | null> {
+  if (!rawDataUrl || typeof window === 'undefined' || typeof Image === 'undefined') {
+    return null;
+  }
+
+  return new Promise(resolve => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth || img.width || 240;
+        const h = img.naturalHeight || img.height || 100;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        const pngDataUrl = canvas.toDataURL('image/png');
+        resolve({ dataUrl: pngDataUrl, width: w, height: h });
+      } catch {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = rawDataUrl;
+  });
+}
+
+function resolveBranchSlug(branch?: string): string {
+  if (!branch) return 'GERAL';
+  if (
+    branch === 'PAULO AFONSO' ||
+    branch === 'DELMIRO' ||
+    branch === 'PAULO AFONSO (TESTE)' ||
+    branch === 'DELMIRO (TESTE)'
+  ) {
+    return getBranchFileSlug(branch as UnitBranch);
+  }
+  return branch.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toUpperCase() || 'GERAL';
+}
+
+function getLastAutoTableY(doc: jsPDF, fallbackY: number): number {
+  const internalDoc = doc as unknown as { lastAutoTable?: { finalY?: number } };
+  return internalDoc.lastAutoTable?.finalY ?? fallbackY;
+}
+
+/**
+ * Gera o arquivo PDF oficial do relatório em memória (Blob / File) com a mesma formatação,
+ * cores, logomarca Grupo MS, ordem de seções e colunas do PDF exportado em Opções de Envio & E-mails.
+ */
+export async function generateStockReportPdfBlob(
+  params: GenerateReportParams
+): Promise<GeneratedPdfReport> {
+  const {
+    selectedStock,
+    todayDateFormatted,
+    activeUser,
+    includeEquipmentDefects = true,
+    isRecontagem = false,
+  } = params;
+
+  const data = buildStructuredReportData(params);
+  const rawLogo = await preloadGrupoMsLogoDataUrl().catch(() => null);
+  const logoAsset = await normalizeLogoToPngDataUrl(rawLogo);
+
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 12;
+  const contentWidth = pageWidth - margin * 2;
+
+  const ensureSpace = (currentY: number, neededHeight: number): number => {
+    if (currentY + neededHeight > pageHeight - 16) {
+      doc.addPage();
+      return 14;
+    }
+    return currentY;
+  };
+
+  const drawSectionBanner = (
+    currentY: number,
+    title: string,
+    fillColor: [number, number, number]
+  ): number => {
+    const startY = ensureSpace(currentY, 16);
+    doc.setFillColor(...fillColor);
+    doc.roundedRect(margin, startY, contentWidth, 8.5, 1.5, 1.5, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.text(title.toUpperCase(), margin + 3.5, startY + 5.7);
+    return startY + 11;
+  };
+
+  const drawEmptyBox = (
+    currentY: number,
+    text: string,
+    borderColor: [number, number, number]
+  ): number => {
+    const startY = ensureSpace(currentY, 12);
+    doc.setDrawColor(...borderColor);
+    doc.setLineWidth(0.35);
+    doc.setFillColor(255, 255, 255);
+    doc.rect(margin, startY, contentWidth, 9, 'FD');
+    doc.setTextColor(71, 85, 105);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.text(text, margin + 3, startY + 5.8);
+    return startY + 12;
+  };
+
+  // -------------------------------------------------------------
+  // CABEÇALHO COM LOGO GRUPO MS DA TELA DE LOGIN AO LADO ESQUERDO
+  // -------------------------------------------------------------
+  const headerTopY = 12;
+  let rightY = headerTopY + 4;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(15, 23, 42);
+  doc.text(
+    isRecontagem ? 'RELATÓRIO DE RECONTAGEM DE ESTOQUE' : 'CONTAGEM DE ESTOQUE',
+    pageWidth - margin,
+    rightY,
+    { align: 'right' }
+  );
+  rightY += 4.8;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(71, 85, 105);
+  doc.text('Gestão de Materiais & Equipamentos', pageWidth - margin, rightY, { align: 'right' });
+  rightY += 5;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(5, 150, 105);
+  doc.text(
+    `Data da ${isRecontagem ? 'Recontagem' : 'Contagem'}: ${todayDateFormatted}`,
+    pageWidth - margin,
+    rightY,
+    { align: 'right' }
+  );
+  rightY += 4.5;
+
+  if (params.branch) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(180, 83, 9);
+    doc.text(`Base / Unidade: ${params.branch}`, pageWidth - margin, rightY, { align: 'right' });
+    rightY += 4.3;
+  }
+
+  if (activeUser) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Conferente: ${activeUser.name}`, pageWidth - margin, rightY, { align: 'right' });
+    rightY += 4.3;
+  }
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text(`Estoque: ${data.stockLabel}`, pageWidth - margin, rightY, { align: 'right' });
+
+  const headerBottomMetaY = rightY + 3;
+  let logoBottomY = headerTopY + 18;
+
+  if (logoAsset) {
+    const maxW = 48;
+    const maxH = 22;
+    const scale = Math.min(maxW / logoAsset.width, maxH / logoAsset.height);
+    const drawW = logoAsset.width * scale;
+    const drawH = logoAsset.height * scale;
+    const logoCenterY = headerTopY + Math.max(0, (headerBottomMetaY - headerTopY - drawH) / 2);
+    doc.addImage(logoAsset.dataUrl, 'PNG', margin, logoCenterY, drawW, drawH);
+    logoBottomY = logoCenterY + drawH;
+  } else {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(15, 23, 42);
+    doc.text('GRUPO MS', margin, headerTopY + 10);
+  }
+
+  let y = Math.max(headerBottomMetaY, logoBottomY) + 3;
+  doc.setDrawColor(5, 150, 105);
+  doc.setLineWidth(0.9);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 6;
+
+  // -------------------------------------------------------------
+  // 1ª INFORMAÇÃO DO RELATÓRIO: ESTOQUE CONSOLIDADO
+  // -------------------------------------------------------------
+  y = drawSectionBanner(y, 'ESTOQUE CONSOLIDADO', [6, 95, 70]);
+
+  if (selectedStock === 'materiais' || selectedStock === 'ambos') {
+    if (data.consolidadoMatRows.length > 0) {
+      autoTable(doc, {
+        startY: y,
+        margin: { left: margin, right: margin },
+        theme: 'grid',
+        showHead: 'everyPage',
+        showFoot: 'lastPage',
+        styles: {
+          font: 'helvetica',
+          fontSize: 8.5,
+          cellPadding: 2.3,
+          lineColor: [167, 243, 208],
+          lineWidth: 0.35,
+          textColor: [15, 23, 42],
+          valign: 'middle',
+        },
+        head: [
+          [
+            {
+              content: 'ESTOQUE CONSOLIDADO: MATERIAIS',
+              colSpan: 3,
+              styles: {
+                fillColor: [6, 95, 70],
+                textColor: [255, 255, 255],
+                fontStyle: 'bold',
+                fontSize: 9,
+                halign: 'left',
+              },
+            },
+          ],
+          [
+            { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+            { content: 'DESCRIÇÃO DO ITEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+            { content: 'QUANTIDADE', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        body: data.consolidadoMatRows.map(r => [
+          { content: `[${r.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
+          { content: r.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
+          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
+        ]) as RowInput[],
+        foot: [
+          [
+            {
+              content: 'TOTAL GERAL DE MATERIAIS:',
+              colSpan: 2,
+              styles: {
+                fillColor: [5, 150, 105],
+                textColor: [255, 255, 255],
+                fontStyle: 'bold',
+                fontSize: 9.5,
+                halign: 'right',
+              },
+            },
+            {
+              content: `${data.totalGeralMateriais} un`,
+              styles: {
+                fillColor: [5, 150, 105],
+                textColor: [255, 255, 255],
+                fontStyle: 'bold',
+                fontSize: 10,
+                halign: 'right',
+              },
+            },
+          ],
+        ],
+        columnStyles: {
+          0: { cellWidth: 34 },
+          2: { cellWidth: 36, halign: 'right' },
+        },
+      });
+      y = getLastAutoTableY(doc, y) + 4.5;
+    } else {
+      y = drawEmptyBox(
+        y,
+        'ESTOQUE CONSOLIDADO (MATERIAIS): Nenhum material contado até o momento.',
+        [167, 243, 208]
+      );
+    }
+  }
+
+  if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
+    if (data.totalEquipamentosGeral > 0) {
+      autoTable(doc, {
+        startY: y,
+        margin: { left: margin, right: margin },
+        theme: 'grid',
+        showHead: 'everyPage',
+        showFoot: 'lastPage',
+        styles: {
+          font: 'helvetica',
+          fontSize: 8.5,
+          cellPadding: 2.3,
+          lineColor: [167, 243, 208],
+          lineWidth: 0.35,
+          textColor: [15, 23, 42],
+          valign: 'middle',
+        },
+        head: [
+          [
+            {
+              content: `ESTOQUE CONSOLIDADO: EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}`,
+              colSpan: 3,
+              styles: {
+                fillColor: [6, 95, 70],
+                textColor: [255, 255, 255],
+                fontStyle: 'bold',
+                fontSize: 9,
+                halign: 'left',
+              },
+            },
+          ],
+          [
+            { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+            { content: 'DESCRIÇÃO DO EQUIPAMENTO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+            { content: 'QUANTIDADE', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        body: data.consolidadoEquipRows.map(g => [
+          { content: `[${g.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
+          { content: g.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
+          { content: `${g.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
+        ]) as RowInput[],
+        foot: [
+          [
+            {
+              content: `TOTAL GERAL DE EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}:`,
+              colSpan: 2,
+              styles: {
+                fillColor: [5, 150, 105],
+                textColor: [255, 255, 255],
+                fontStyle: 'bold',
+                fontSize: 9.5,
+                halign: 'right',
+              },
+            },
+            {
+              content: `${data.totalEquipamentosGeral} un`,
+              styles: {
+                fillColor: [5, 150, 105],
+                textColor: [255, 255, 255],
+                fontStyle: 'bold',
+                fontSize: 10,
+                halign: 'right',
+              },
+            },
+          ],
+        ],
+        columnStyles: {
+          0: { cellWidth: 34 },
+          2: { cellWidth: 36, halign: 'right' },
+        },
+      });
+      y = getLastAutoTableY(doc, y) + 5;
+    } else {
+      y = drawEmptyBox(
+        y,
+        'ESTOQUE CONSOLIDADO (EQUIPAMENTOS): Nenhum equipamento contado até o momento.',
+        [167, 243, 208]
+      );
+    }
+  }
+
+  // -------------------------------------------------------------
+  // DETALHAMENTO: ESTOQUE DE MATERIAIS (DETALHADO)
+  // -------------------------------------------------------------
+  if (selectedStock === 'materiais' || selectedStock === 'ambos') {
+    y = drawSectionBanner(y + 1, 'ESTOQUE DE MATERIAIS (DETALHADO)', [15, 23, 42]);
+
+    if (data.dispMatRows.length > 0) {
+      autoTable(doc, {
+        startY: y,
+        margin: { left: margin, right: margin },
+        theme: 'grid',
+        showHead: 'everyPage',
+        showFoot: 'lastPage',
+        styles: {
+          font: 'helvetica',
+          fontSize: 8,
+          cellPadding: 2,
+          lineColor: [203, 213, 225],
+          lineWidth: 0.25,
+          textColor: [30, 41, 59],
+          valign: 'middle',
+        },
+        head: [
+          [
+            {
+              content: '1 ITENS DISPONÍVEIS',
+              colSpan: 3,
+              styles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontStyle: 'bold', fontSize: 8.5 },
+            },
+          ],
+          [
+            { content: 'CÓDIGO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
+            { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
+            { content: 'QUANTIDADE', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        body: data.dispMatRows.map(r => [
+          { content: `[${r.code}]`, styles: { font: 'courier' } },
+          r.name,
+          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
+        ]) as RowInput[],
+        foot: [
+          [
+            { content: 'Subtotal Disponíveis:', colSpan: 2, styles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+            { content: `${data.subtotalMatDisp} un`, styles: { fillColor: [241, 245, 249], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        columnStyles: {
+          0: { cellWidth: 32 },
+          2: { cellWidth: 32, halign: 'right' },
+        },
+      });
+      y = getLastAutoTableY(doc, y) + 4;
+    }
+
+    if (data.danifMatRows.length > 0) {
+      autoTable(doc, {
+        startY: y,
+        margin: { left: margin, right: margin },
+        theme: 'grid',
+        showHead: 'everyPage',
+        showFoot: 'lastPage',
+        styles: {
+          font: 'helvetica',
+          fontSize: 8,
+          cellPadding: 2,
+          lineColor: [252, 165, 165],
+          lineWidth: 0.25,
+          textColor: [30, 41, 59],
+          valign: 'middle',
+        },
+        head: [
+          [
+            {
+              content: '2 ITENS DANIFICADOS',
+              colSpan: 3,
+              styles: { fillColor: [254, 226, 226], textColor: [153, 27, 27], fontStyle: 'bold', fontSize: 8.5 },
+            },
+          ],
+          [
+            { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+            { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+            { content: 'QUANTIDADE', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        body: data.danifMatRows.map(r => [
+          { content: `[${r.code}]`, styles: { font: 'courier' } },
+          r.name,
+          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [185, 28, 28], halign: 'right' } },
+        ]) as RowInput[],
+        foot: [
+          [
+            { content: 'Subtotal Danificados:', colSpan: 2, styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+            { content: `${data.subtotalMatDanif} un`, styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        columnStyles: {
+          0: { cellWidth: 32 },
+          2: { cellWidth: 32, halign: 'right' },
+        },
+      });
+      y = getLastAutoTableY(doc, y) + 4;
+    }
+
+    if (data.vazioRotaRows.length > 0) {
+      autoTable(doc, {
+        startY: y,
+        margin: { left: margin, right: margin },
+        theme: 'grid',
+        showHead: 'everyPage',
+        showFoot: 'lastPage',
+        styles: {
+          font: 'helvetica',
+          fontSize: 8,
+          cellPadding: 2,
+          lineColor: [252, 211, 77],
+          lineWidth: 0.25,
+          textColor: [30, 41, 59],
+          valign: 'middle',
+        },
+        head: [
+          [
+            {
+              content: '3 ITENS VAZIO E EM ROTA',
+              colSpan: 4,
+              styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', fontSize: 8.5 },
+            },
+          ],
+          [
+            { content: 'CÓDIGO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+            { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+            { content: 'SITUAÇÃO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+            { content: 'QUANTIDADE', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        body: data.vazioRotaRows.map(r => [
+          { content: `[${r.code}]`, styles: { font: 'courier' } },
+          r.name,
+          { content: r.situation, styles: { fontStyle: 'bold', textColor: [146, 64, 14] } },
+          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
+        ]) as RowInput[],
+        foot: [
+          [
+            { content: 'Subtotal Vazio e Em Rota:', colSpan: 3, styles: { fillColor: [254, 243, 199], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+            { content: `${data.subtotalMatVazioRota} un`, styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', halign: 'right' } },
+          ],
+        ],
+        columnStyles: {
+          0: { cellWidth: 30 },
+          2: { cellWidth: 32 },
+          3: { cellWidth: 30, halign: 'right' },
+        },
+      });
+      y = getLastAutoTableY(doc, y) + 5;
+    }
+  }
+
+  // -------------------------------------------------------------
+  // DETALHAMENTO: ESTOQUE DE EQUIPAMENTOS (DETALHADO)
+  // -------------------------------------------------------------
+  if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
+    y = drawSectionBanner(
+      y + 1,
+      isRecontagem
+        ? 'ESTOQUE DE EQUIPAMENTOS (RECONTAGEM - DETALHADO)'
+        : 'ESTOQUE DE EQUIPAMENTOS (DETALHADO)',
+      [15, 23, 42]
+    );
+
+    if (isRecontagem) {
+      if (data.emEstoqueEquips.length > 0) {
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [110, 231, 183],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '1 EQUIPAMENTOS EM ESTOQUE',
+                colSpan: 3,
+                styles: { fillColor: [167, 243, 208], textColor: [6, 95, 70], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
+            ],
+          ],
+          body: data.emEstoqueEquips.map(eq => [
+            { content: eq.code ? `[${eq.code}]` : '-', styles: { font: 'courier' } },
+            { content: eq.patrimony, styles: { fontStyle: 'bold', textColor: [4, 120, 87] } },
+            eq.fullNameWithSpecs,
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Em Estoque:', colSpan: 2, styles: { fillColor: [209, 250, 229], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.emEstoqueEquips.length} un`, styles: { fillColor: [209, 250, 229], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 26 },
+            1: { cellWidth: 32 },
+          },
+        });
+        y = getLastAutoTableY(doc, y) + 4;
+      }
+
+      if (data.naoConstaEquips.length > 0) {
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [252, 165, 165],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '2 EQUIPAMENTOS NÃO CONSTAM EM ESTOQUE',
+                colSpan: 3,
+                styles: { fillColor: [254, 202, 202], textColor: [153, 27, 27], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+            ],
+          ],
+          body: data.naoConstaEquips.map(eq => [
+            { content: eq.code ? `[${eq.code}]` : '-', styles: { font: 'courier' } },
+            { content: eq.patrimony, styles: { fontStyle: 'bold', textColor: [185, 28, 28] } },
+            eq.fullNameWithSpecs,
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Não Constam em Estoque:', colSpan: 2, styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.naoConstaEquips.length} un`, styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 26 },
+            1: { cellWidth: 32 },
+          },
+        });
+        y = getLastAutoTableY(doc, y) + 4;
+      }
+    } else {
+      if (data.dispEquips.length > 0) {
+        const dispColCount = includeEquipmentDefects ? 4 : 3;
+        const dispHeaders: RowInput = includeEquipmentDefects
+          ? [
+              { content: 'CÓDIGO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' as const } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' as const } },
+              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' as const } },
+              { content: 'OBSERVAÇÕES', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' as const } },
+            ]
+          : [
+              { content: 'CÓDIGO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' as const } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' as const } },
+              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' as const } },
+            ];
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [203, 213, 225],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '1 ITENS DISPONÍVEIS',
+                colSpan: dispColCount,
+                styles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            dispHeaders,
+          ],
+          body: data.dispEquips.map(eq => {
+            const base = [
+              { content: eq.code ? `[${eq.code}]` : '-', styles: { font: 'courier' as const } },
+              { content: eq.patrimony, styles: { fontStyle: 'bold' as const, textColor: [4, 120, 87] as [number, number, number] } },
+              eq.fullNameWithSpecs,
+            ];
+            if (includeEquipmentDefects) {
+              base.push({ content: eq.observations?.trim() || '-', styles: { fontSize: 7.5, textColor: [71, 85, 105] } } as never);
+            }
+            return base;
+          }) as RowInput[],
+          foot: [
+            [
+              {
+                content: 'Subtotal Disponíveis:',
+                colSpan: dispColCount - 1,
+                styles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' },
+              },
+              {
+                content: `${data.dispEquips.length} un`,
+                styles: { fillColor: [241, 245, 249], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' },
+              },
+            ],
+          ],
+          columnStyles: includeEquipmentDefects
+            ? { 0: { cellWidth: 24 }, 1: { cellWidth: 30 }, 3: { cellWidth: 44 } }
+            : { 0: { cellWidth: 26 }, 1: { cellWidth: 32 } },
+        });
+        y = getLastAutoTableY(doc, y) + 4;
+      }
+
+      if (data.danifEquips.length > 0) {
+        const danifColCount = includeEquipmentDefects ? 5 : 3;
+        const danifHeaders: RowInput = includeEquipmentDefects
+          ? [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+              { content: 'DEFEITO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+              { content: 'OBSERVAÇÕES', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+            ]
+          : [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' as const } },
+            ];
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [252, 165, 165],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '2 ITENS DANIFICADOS',
+                colSpan: danifColCount,
+                styles: { fillColor: [254, 226, 226], textColor: [153, 27, 27], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            danifHeaders,
+          ],
+          body: data.danifEquips.map(eq => {
+            const base = [
+              { content: eq.code ? `[${eq.code}]` : '-', styles: { font: 'courier' as const } },
+              { content: eq.patrimony, styles: { fontStyle: 'bold' as const, textColor: [185, 28, 28] as [number, number, number] } },
+              eq.fullNameWithSpecs,
+            ];
+            if (includeEquipmentDefects) {
+              base.push(
+                { content: eq.damageDescription || '-', styles: { fontStyle: 'bold', textColor: [185, 28, 28] } } as never,
+                { content: eq.observations?.trim() || '-', styles: { fontSize: 7.5, textColor: [71, 85, 105] } } as never
+              );
+            }
+            return base;
+          }) as RowInput[],
+          foot: [
+            [
+              {
+                content: 'Subtotal Danificados:',
+                colSpan: danifColCount - 1,
+                styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' },
+              },
+              {
+                content: `${data.danifEquips.length} un`,
+                styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' },
+              },
+            ],
+          ],
+          columnStyles: includeEquipmentDefects
+            ? { 0: { cellWidth: 22 }, 1: { cellWidth: 28 }, 3: { cellWidth: 36 }, 4: { cellWidth: 34 } }
+            : { 0: { cellWidth: 26 }, 1: { cellWidth: 32 } },
+        });
+        y = getLastAutoTableY(doc, y) + 4;
+      }
+
+      if (data.uncatEquips.length > 0) {
+        const uncatColCount = includeEquipmentDefects ? 5 : 3;
+        const uncatHeaders: RowInput = includeEquipmentDefects
+          ? [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+              { content: 'DESCRIÇÃO / IDENTIFICAÇÃO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+              { content: 'DEFEITO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+              { content: 'OBSERVAÇÕES', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+            ]
+          : [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+              { content: 'DESCRIÇÃO / IDENTIFICAÇÃO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' as const } },
+            ];
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [252, 211, 77],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '3 EQUIPAMENTOS NÃO CADASTRADOS (ENCONTRADOS NA CONTAGEM)',
+                colSpan: uncatColCount,
+                styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            uncatHeaders,
+          ],
+          body: data.uncatEquips.map(u => {
+            const codeStr = u.code && u.code !== '0' ? u.code : 'NÃO-CAD';
+            const base = [
+              { content: `[${codeStr}]`, styles: { font: 'courier' as const, fontStyle: 'bold' as const } },
+              { content: u.patrimony, styles: { fontStyle: 'bold' as const, textColor: [146, 64, 14] as [number, number, number] } },
+              u.fullNameWithSpecs,
+            ];
+            if (includeEquipmentDefects) {
+              base.push(
+                { content: u.damageDescription || '-', styles: { fontStyle: 'bold', textColor: [185, 28, 28] } } as never,
+                { content: u.observations?.trim() || '-', styles: { fontSize: 7.5, textColor: [71, 85, 105] } } as never
+              );
+            }
+            return base;
+          }) as RowInput[],
+          foot: [
+            [
+              {
+                content: 'Subtotal Não Cadastrados:',
+                colSpan: uncatColCount - 1,
+                styles: { fillColor: [254, 243, 199], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' },
+              },
+              {
+                content: `${data.uncatEquips.length} un`,
+                styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', halign: 'right' },
+              },
+            ],
+          ],
+          columnStyles: includeEquipmentDefects
+            ? { 0: { cellWidth: 24 }, 1: { cellWidth: 28 }, 3: { cellWidth: 34 }, 4: { cellWidth: 34 } }
+            : { 0: { cellWidth: 26 }, 1: { cellWidth: 32 } },
+        });
+        y = getLastAutoTableY(doc, y) + 4;
+      }
+    }
+  }
+
+  // -------------------------------------------------------------
+  // RODAPÉ
+  // -------------------------------------------------------------
+  const footerY = ensureSpace(y + 4, 12);
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.35);
+  doc.line(margin, footerY, pageWidth - margin, footerY);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text(
+    'Relatório Oficial de Contagem emitido pelo aplicativo CONTAGEM DE MATERIAIS & EQUIPAMENTOS do Grupo MS.',
+    pageWidth / 2,
+    footerY + 5,
+    { align: 'center' }
+  );
+
+  const safeDate = (todayDateFormatted || new Date().toLocaleDateString('pt-BR'))
+    .replace(/\//g, '-')
+    .replace(/[^a-zA-Z0-9_-]/g, '');
+  const branchSlug = resolveBranchSlug(params.branch);
+  const stockSlug = selectedStock.toUpperCase();
+  const fileName = `Relatorio_Estoque_${branchSlug}_${safeDate}_${stockSlug}.pdf`;
+
+  const blob = doc.output('blob');
+  const file = new File([blob], fileName, { type: 'application/pdf' });
+  const dataUri = doc.output('datauristring');
+  const base64 = dataUri.includes(',') ? dataUri.split(',')[1] : '';
+
+  return {
+    blob,
+    file,
+    fileName,
+    base64,
+  };
+}
+

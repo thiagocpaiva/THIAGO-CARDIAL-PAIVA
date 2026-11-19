@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { AppBrandIcon } from './AppBrandIcons';
+import { getSelectableBranches, isCoringaUser } from '../types/inventory';
 
 export type MainTab = 
   | 'materiais' 
@@ -43,6 +44,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   const {
     activeUser,
     isMaster,
+    isCoringa,
     logout,
     todayDateFormatted,
     activeBranch,
@@ -53,6 +55,7 @@ export const Navigation: React.FC<NavigationProps> = ({
     isRecontagemTabsBlockedForContador
   } = useInventory();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
+  const selectableBranches = getSelectableBranches(isCoringa);
 
   // Para Usuários Master: Exibe todos os 6 botões (Materiais, Equipamentos, Recontagem, Cadastros, Exportar, Usuários)
   // Para Usuários Contadores: Exibe Materiais, Equipamentos, (Recontagem caso liberada/haja itens a recontar) e Exportar
@@ -113,14 +116,16 @@ export const Navigation: React.FC<NavigationProps> = ({
                   {activeUser.name}
                 </span>
                 <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold border shrink-0 ${
-                  activeUser.roleLevel === 'master'
-                    ? 'bg-purple-50 text-purple-700 border-purple-200'
-                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  isCoringaUser(activeUser)
+                    ? 'bg-amber-100 text-amber-950 border-amber-300'
+                    : activeUser.roleLevel === 'master'
+                      ? 'bg-purple-50 text-purple-700 border-purple-200'
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
                 }`}>
-                  {activeUser.roleLevel === 'master' ? 'Master' : 'Contador'}
+                  {isCoringaUser(activeUser) ? 'Coringa • Teste' : activeUser.roleLevel === 'master' ? 'Master' : 'Contador'}
                 </span>
 
-                {/* Base Ativa: PAULO AFONSO ou DELMIRO (Oculto na tela Usuários pois as configurações servem para ambas as bases) */}
+                {/* Base Ativa: PAULO AFONSO / DELMIRO ou Bases de Teste (Oculto na tela Usuários) */}
                 {activeTab !== 'usuarios' && (
                   isMaster ? (
                     <div className="relative inline-block">
@@ -135,33 +140,23 @@ export const Navigation: React.FC<NavigationProps> = ({
                         <ChevronDown className="w-2.5 h-2.5 text-amber-800" />
                       </button>
                       {isBranchMenuOpen && (
-                        <div className="absolute left-0 mt-1 z-50 bg-white border border-slate-200 rounded-xl shadow-xl py-1 min-w-[125px] text-xs font-bold animate-in fade-in">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveBranch('PAULO AFONSO');
-                              setIsBranchMenuOpen(false);
-                            }}
-                            className={`w-full text-left px-2.5 py-1.5 hover:bg-amber-50 flex items-center justify-between text-[10px] ${
-                              activeBranch === 'PAULO AFONSO' ? 'text-amber-900 font-black bg-amber-50/70' : 'text-slate-700'
-                            }`}
-                          >
-                            <span>PAULO AFONSO</span>
-                            {activeBranch === 'PAULO AFONSO' && <span>✓</span>}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveBranch('DELMIRO');
-                              setIsBranchMenuOpen(false);
-                            }}
-                            className={`w-full text-left px-2.5 py-1.5 hover:bg-amber-50 flex items-center justify-between text-[10px] ${
-                              activeBranch === 'DELMIRO' ? 'text-amber-900 font-black bg-amber-50/70' : 'text-slate-700'
-                            }`}
-                          >
-                            <span>DELMIRO</span>
-                            {activeBranch === 'DELMIRO' && <span>✓</span>}
-                          </button>
+                        <div className="absolute left-0 mt-1 z-50 bg-white border border-slate-200 rounded-xl shadow-xl py-1 min-w-[175px] text-xs font-bold animate-in fade-in">
+                          {selectableBranches.map(branchOpt => (
+                            <button
+                              key={branchOpt}
+                              type="button"
+                              onClick={() => {
+                                setActiveBranch(branchOpt);
+                                setIsBranchMenuOpen(false);
+                              }}
+                              className={`w-full text-left px-2.5 py-1.5 hover:bg-amber-50 flex items-center justify-between gap-2 text-[10px] ${
+                                activeBranch === branchOpt ? 'text-amber-900 font-black bg-amber-50/70' : 'text-slate-700'
+                              }`}
+                            >
+                              <span>{branchOpt}</span>
+                              {activeBranch === branchOpt && <span>✓</span>}
+                            </button>
+                          ))}
                         </div>
                       )}
                     </div>

@@ -15,11 +15,12 @@ import {
 import { useInventory } from '../../context/InventoryContext';
 import {
   generateStockReportText,
-  generateStockReportHtml,
-  generateStockReportEmailTableText,
-  generateStockReportPdfBlob,
+  generateStockReportEmailHeaderText,
+  generateStockReportEmailHeaderHtml,
+  generateStockReportPdfSync,
+  generateStockReportEmlBlob,
   GeneratedPdfReport,
-  preloadGrupoMsLogoDataUrl,
+  preloadNormalizedGrupoMsLogo,
 } from '../../utils/reportGenerator';
 import { sendEmailDirectly } from '../../utils/emailSender';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
@@ -59,13 +60,14 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [lastGeneratedPdf, setLastGeneratedPdf] = useState<{
     pdf: GeneratedPdfReport;
+    eml: { blob: Blob; fileName: string };
     subject: string;
     shareText: string;
     mailtoUrl: string;
   } | null>(null);
 
   useEffect(() => {
-    preloadGrupoMsLogoDataUrl().catch(() => {});
+    preloadNormalizedGrupoMsLogo().catch(() => {});
   }, []);
 
   const showToast = (msg: string) => {
@@ -73,7 +75,7 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
     setTimeout(() => setFeedbackToast(null), 6000);
   };
 
-  const triggerPdfDownload = (blob: Blob, fileName: string) => {
+  const triggerFileDownload = (blob: Blob, fileName: string) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -82,6 +84,33 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
     link.click();
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+
+  const buildSafeMailtoUrl = (to: string, cc: string, subject: string, fullBody: string): string => {
+    const queryParts: string[] = [];
+    if (cc) queryParts.push(`cc=${encodeURIComponent(cc)}`);
+    queryParts.push(`subject=${encodeURIComponent(subject)}`);
+
+    const prefix = `mailto:${encodeURIComponent(to)}?${queryParts.join('&')}&body=`;
+    const maxTotalLength = 1850;
+    const encodedFullBody = encodeURIComponent(fullBody);
+
+    if (prefix.length + encodedFullBody.length <= maxTotalLength) {
+      return `${prefix}${encodedFullBody}`;
+    }
+
+    const suffixNotice = `\n\n[Relatório completo gerado no arquivo PDF anexo/baixado e copiado para a área de transferência.]`;
+    let candidate = fullBody.slice(0, 950);
+    const lastBreak = candidate.lastIndexOf('\n');
+    if (lastBreak > 300) {
+      candidate = candidate.slice(0, lastBreak);
+    }
+    let truncatedBody = `${candidate}${suffixNotice}`;
+    while (prefix.length + encodeURIComponent(truncatedBody).length > maxTotalLength && candidate.length > 100) {
+      candidate = candidate.slice(0, Math.floor(candidate.length * 0.75));
+      truncatedBody = `${candidate}${suffixNotice}`;
+    }
+    return `${prefix}${encodeURIComponent(truncatedBody)}`;
   };
 
   // Lista de e-mails configurados na base (atualizada em tempo real conforme Opções de Envio & E-mails)
@@ -144,66 +173,62 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
         branch: activeBranch,
       };
 
-      const [pdfReport, reportHtml, emailTableBody] = await Promise.all([
-        generateStockReportPdfBlob(reportParams),
-        Promise.resolve(generateStockReportHtml(reportParams)),
-        Promise.resolve(
-          generateStockReportEmailTableText({
-            ...reportParams,
-            isMobile: isPhoneFrame,
-          })
-        ),
-      ]);
+      // Geração 100% síncrona para preservar o gesto do usuário ao acionar Web Share / cliente de e-mail
+      const pdfReport = generateStockReportPdfSync(reportParams);
+      const emailHeaderHtml = generateStockReportEmailHeaderHtml(reportParams);
+      const emailHeaderBody = generateStockReportEmailHeaderText(reportParams);
+      const emlDraft = generateStockReportEmlBlob({
+        to: effectiveTo,
+        cc: effectiveCc || undefined,
+        subject,
+        htmlBody: emailHeaderHtml,
+        pdf: pdfReport,
+      });
 
-      let mailtoUrl = `mailto:${encodeURIComponent(effectiveTo)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailTableBody)}`;
-      if (effectiveCc) {
-        mailtoUrl += `&cc=${encodeURIComponent(effectiveCc)}`;
-      }
+      const mailtoUrl = buildSafeMailtoUrl(effectiveTo, effectiveCc, subject, emailHeaderBody);
 
-      const shareText = [
-        `Para: ${effectiveTo}`,
-        effectiveCc ? `Cc: ${effectiveCc}` : '',
-        '',
-        `Segue em anexo o relatório em PDF (${pdfReport.fileName}) da base ${activeBranch}.`,
-        '',
-        emailTableBody,
-      ]
-        .filter(Boolean)
-        .join('\n');
+      const shareText = emailHeaderBody;
 
       setLastGeneratedPdf({
         pdf: pdfReport,
+        eml: emlDraft,
         subject,
         shareText,
         mailtoUrl,
       });
 
-      // Copia o relatório em formato de tabela (HTML rico e tabela em texto) para a área de transferência
+      // Inicia sincronização Firebase e cópia do cabeçalho para área de transferência sem bloquear o gesto do clique
+      const syncPromise = markCountAsSent();
+
       if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
         try {
-          const blobText = new Blob([emailTableBody], { type: 'text/plain' });
-          const blobHtml = new Blob([reportHtml], { type: 'text/html' });
-          await navigator.clipboard.write([
-            new ClipboardItem({
-              'text/plain': blobText,
-              'text/html': blobHtml,
-            }),
-          ]);
+          const blobText = new Blob([emailHeaderBody], { type: 'text/plain' });
+          const blobHtml = new Blob([emailHeaderHtml], { type: 'text/html' });
+          navigator.clipboard
+            .write([
+              new ClipboardItem({
+                'text/plain': blobText,
+                'text/html': blobHtml,
+              }),
+            ])
+            .catch(() => {
+              navigator.clipboard?.writeText(emailHeaderBody).catch(() => {});
+            });
         } catch {
-          navigator.clipboard.writeText(emailTableBody).catch(() => {});
+          navigator.clipboard.writeText(emailHeaderBody).catch(() => {});
         }
       } else if (navigator.clipboard) {
-        navigator.clipboard.writeText(emailTableBody).catch(() => {});
+        navigator.clipboard.writeText(emailHeaderBody).catch(() => {});
       }
 
-      // Tenta também envio direto com PDF anexado em segundo plano se houver servidor configurado
+      // Tenta também envio direto com PDF anexado e corpo contendo apenas o cabeçalho em segundo plano se houver servidor configurado
       sendEmailDirectly({
         fromEmail: serverEmailConfig?.senderEmail || defaultSenderEmail,
         senderName: serverEmailConfig?.senderName || 'CONTAGEM DE ESTOQUE',
         toEmails: allRecipients,
         subject,
-        bodyText: emailTableBody,
-        htmlBody: reportHtml,
+        bodyText: emailHeaderBody,
+        htmlBody: emailHeaderHtml,
         attachments: [
           {
             filename: pdfReport.fileName,
@@ -213,11 +238,6 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
         ],
         smtpConfig: serverEmailConfig,
       }).catch(() => {});
-
-      // Registra e aguarda a sincronização completa com o Firebase antes de acionar o aplicativo de e-mail:
-      // Conforme regra: somente após o envio do estoque por e-mail todos os dados do contador são sincronizados com o Firebase
-      // e o acesso total das funcionalidades é liberado para o usuário Master.
-      const syncRes = await markCountAsSent();
 
       const canShareFiles =
         typeof navigator !== 'undefined' &&
@@ -242,29 +262,31 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
         }
       }
 
+      const syncRes = await syncPromise;
+
       if (attachedDirectlyViaShare) {
         if (!syncRes.synced && syncRes.message) {
           showToast(syncRes.message);
         } else {
-          showToast(`Contagem sincronizada e PDF (${pdfReport.fileName}) anexado ao compartilhamento de e-mail!`);
+          showToast(`Contagem sincronizada e PDF (${pdfReport.fileName}) anexado ao aplicativo selecionado!`);
         }
         return;
       }
 
       if (userCancelledShare) {
-        showToast('Envio por compartilhamento cancelado. Você pode anexar ou baixar o PDF gerado abaixo.');
+        showToast('Compartilhamento cancelado. Você pode abrir o app de e-mail, compartilhar ou baixar o PDF abaixo.');
         return;
       }
 
-      // Fallback universal (Desktop ou navegadores sem Web Share de arquivos / após delay assíncrono):
-      // Faz o download automático do arquivo PDF formatado e abre o aplicativo de e-mail padrão do dispositivo.
-      triggerPdfDownload(pdfReport.blob, pdfReport.fileName);
+      // Em Desktop ou navegadores onde Web Share de arquivos não está disponível:
+      // Baixa o PDF formatado automaticamente e abre o app de e-mail padrão com destinatários (Para/Cc) preenchidos.
+      triggerFileDownload(pdfReport.blob, pdfReport.fileName);
       window.location.href = mailtoUrl;
 
       if (!syncRes.synced && syncRes.message) {
-        showToast(`${syncRes.message} PDF (${pdfReport.fileName}) baixado para anexo no e-mail.`);
+        showToast(`${syncRes.message} PDF (${pdfReport.fileName}) baixado e app de e-mail aberto.`);
       } else {
-        showToast(`PDF (${pdfReport.fileName}) gerado e baixado! Aplicativo de e-mail aberto — anexe o arquivo PDF baixado se não estiver anexado automaticamente.`);
+        showToast(`App de e-mail aberto com destinatários preenchidos e PDF (${pdfReport.fileName}) baixado para anexo!`);
       }
     } catch (err: any) {
       setErrorMessage(err?.message || 'Erro ao gerar o PDF do relatório para envio por e-mail.');
@@ -295,9 +317,9 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
       }
     }
 
-    triggerPdfDownload(pdf.blob, pdf.fileName);
+    triggerFileDownload(pdf.blob, pdf.fileName);
     window.location.href = mailtoUrl;
-    showToast(`PDF (${pdf.fileName}) baixado e e-mail aberto!`);
+    showToast(`PDF (${pdf.fileName}) baixado e app de e-mail aberto!`);
   };
 
   return (
@@ -450,11 +472,11 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
         </button>
 
         {lastGeneratedPdf && (
-          <div className="p-2.5 bg-emerald-50/70 border border-emerald-200 rounded-xl flex items-center justify-between gap-2 flex-wrap">
-            <div className="text-[11px] font-bold text-emerald-950 truncate flex-1 min-w-0">
+          <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
+            <div className="text-[11px] font-bold text-emerald-950 truncate">
               PDF gerado: <span className="font-mono">{lastGeneratedPdf.pdf.fileName}</span>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <button
                 type="button"
                 onClick={handleShareGeneratedPdf}
@@ -465,7 +487,26 @@ export const ExportarEstoqueView: React.FC<ExportarEstoqueViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => triggerPdfDownload(lastGeneratedPdf.pdf.blob, lastGeneratedPdf.pdf.fileName)}
+                onClick={() => {
+                  window.location.href = lastGeneratedPdf.mailtoUrl;
+                }}
+                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+              >
+                <Mail className="w-3.5 h-3.5" />
+                <span>Abrir E-mail (Destinatários)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => triggerFileDownload(lastGeneratedPdf.eml.blob, lastGeneratedPdf.eml.fileName)}
+                className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                title="Arquivo .eml com destinatários, corpo e PDF já anexado para Outlook/Mail"
+              >
+                <Mail className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Rascunho .EML (Com Anexo)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => triggerFileDownload(lastGeneratedPdf.pdf.blob, lastGeneratedPdf.pdf.fileName)}
                 className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
               >
                 <FileDown className="w-3.5 h-3.5" />

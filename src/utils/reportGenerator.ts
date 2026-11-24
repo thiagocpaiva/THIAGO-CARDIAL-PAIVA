@@ -15,6 +15,8 @@ import { GRUPO_MS_LOGO_PATH } from '../components/common/GrupoMSBrand';
 
 let cachedGrupoMsLogoDataUrl: string | null = null;
 let logoPreloadPromise: Promise<string | null> | null = null;
+let cachedNormalizedLogoAsset: { dataUrl: string; width: number; height: number } | null = null;
+let normalizedLogoPromise: Promise<{ dataUrl: string; width: number; height: number } | null> | null = null;
 
 /**
  * Pré-carrega a logomarca oficial "GRUPO MS" da tela de login em Base64
@@ -54,8 +56,52 @@ export function preloadGrupoMsLogoDataUrl(): Promise<string | null> {
   return logoPreloadPromise;
 }
 
+export function preloadNormalizedGrupoMsLogo(): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  if (cachedNormalizedLogoAsset) return Promise.resolve(cachedNormalizedLogoAsset);
+  if (normalizedLogoPromise) return normalizedLogoPromise;
+  if (typeof window === 'undefined' || typeof Image === 'undefined') {
+    return Promise.resolve(null);
+  }
+
+  normalizedLogoPromise = (async () => {
+    const raw = await preloadGrupoMsLogoDataUrl();
+    if (!raw) return null;
+    const normalized = await new Promise<{ dataUrl: string; width: number; height: number } | null>(resolve => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const w = img.naturalWidth || img.width || 240;
+          const h = img.naturalHeight || img.height || 100;
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(null);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          const pngDataUrl = canvas.toDataURL('image/png');
+          resolve({ dataUrl: pngDataUrl, width: w, height: h });
+        } catch {
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = raw;
+    });
+    if (normalized) {
+      cachedNormalizedLogoAsset = normalized;
+    }
+    return normalized;
+  })();
+
+  return normalizedLogoPromise;
+}
+
 if (typeof window !== 'undefined') {
-  preloadGrupoMsLogoDataUrl().catch(() => {});
+  preloadNormalizedGrupoMsLogo().catch(() => {});
 }
 
 export interface GenerateReportParams {
@@ -1649,38 +1695,6 @@ interface NormalizedLogoAsset {
   height: number;
 }
 
-async function normalizeLogoToPngDataUrl(rawDataUrl: string | null): Promise<NormalizedLogoAsset | null> {
-  if (!rawDataUrl || typeof window === 'undefined' || typeof Image === 'undefined') {
-    return null;
-  }
-
-  return new Promise(resolve => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const w = img.naturalWidth || img.width || 240;
-        const h = img.naturalHeight || img.height || 100;
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(null);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, w, h);
-        const pngDataUrl = canvas.toDataURL('image/png');
-        resolve({ dataUrl: pngDataUrl, width: w, height: h });
-      } catch {
-        resolve(null);
-      }
-    };
-    img.onerror = () => resolve(null);
-    img.src = rawDataUrl;
-  });
-}
-
 function resolveBranchSlug(branch?: string): string {
   if (!branch) return 'GERAL';
   if (
@@ -1699,13 +1713,10 @@ function getLastAutoTableY(doc: jsPDF, fallbackY: number): number {
   return internalDoc.lastAutoTable?.finalY ?? fallbackY;
 }
 
-/**
- * Gera o arquivo PDF oficial do relatório em memória (Blob / File) com a mesma formatação,
- * cores, logomarca Grupo MS, ordem de seções e colunas do PDF exportado em Opções de Envio & E-mails.
- */
-export async function generateStockReportPdfBlob(
-  params: GenerateReportParams
-): Promise<GeneratedPdfReport> {
+function buildPdfWithLogo(
+  params: GenerateReportParams,
+  logoAsset: NormalizedLogoAsset | null
+): GeneratedPdfReport {
   const {
     selectedStock,
     todayDateFormatted,
@@ -1715,9 +1726,6 @@ export async function generateStockReportPdfBlob(
   } = params;
 
   const data = buildStructuredReportData(params);
-  const rawLogo = await preloadGrupoMsLogoDataUrl().catch(() => null);
-  const logoAsset = await normalizeLogoToPngDataUrl(rawLogo);
-
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -2538,4 +2546,184 @@ export async function generateStockReportPdfBlob(
     base64,
   };
 }
+
+/**
+ * Versão síncrona para preservar o gesto do usuário no clique (Web Share / anexo imediato)
+ * utilizando a logomarca pré-carregada.
+ */
+export function generateStockReportPdfSync(params: GenerateReportParams): GeneratedPdfReport {
+  return buildPdfWithLogo(params, cachedNormalizedLogoAsset);
+}
+
+/**
+ * Gera o arquivo PDF oficial do relatório em memória (Blob / File) com a mesma formatação,
+ * cores, logomarca Grupo MS, ordem de seções e colunas do PDF exportado em Opções de Envio & E-mails.
+ */
+export async function generateStockReportPdfBlob(
+  params: GenerateReportParams
+): Promise<GeneratedPdfReport> {
+  const logoAsset = await preloadNormalizedGrupoMsLogo().catch(() => null);
+  return buildPdfWithLogo(params, logoAsset);
+}
+
+function encodeBase64Utf8(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function foldBase64(b64: string): string {
+  return b64.replace(/.{1,76}/g, '$&\r\n').trimEnd();
+}
+
+/**
+ * Gera um rascunho de e-mail padrão RFC 2822 (.eml) com destinatários (To/Cc),
+ * assunto, corpo HTML formatado e o arquivo PDF anexado.
+ */
+export function generateStockReportEmlBlob(opts: {
+  to: string;
+  cc?: string;
+  subject: string;
+  htmlBody: string;
+  pdf: GeneratedPdfReport;
+}): { blob: Blob; fileName: string } {
+  const boundary = `----=_GrupoMS_Report_${Date.now()}`;
+  const encodedSubject = `=?UTF-8?B?${encodeBase64Utf8(opts.subject)}?=`;
+  const htmlBase64 = foldBase64(encodeBase64Utf8(opts.htmlBody));
+  const pdfBase64 = foldBase64(opts.pdf.base64);
+
+  const headers = [
+    'MIME-Version: 1.0',
+    'X-Unsent: 1',
+    `To: ${opts.to}`,
+    opts.cc ? `Cc: ${opts.cc}` : '',
+    `Subject: ${encodedSubject}`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+  ]
+    .filter(Boolean)
+    .join('\r\n');
+
+  const body = [
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64',
+    '',
+    htmlBase64,
+    `--${boundary}`,
+    `Content-Type: application/pdf; name="${opts.pdf.fileName}"`,
+    'Content-Transfer-Encoding: base64',
+    `Content-Disposition: attachment; filename="${opts.pdf.fileName}"`,
+    '',
+    pdfBase64,
+    `--${boundary}--`,
+    '',
+  ].join('\r\n');
+
+  const emlContent = `${headers}\r\n${body}`;
+  const blob = new Blob([emlContent], { type: 'message/rfc822' });
+  const fileName = opts.pdf.fileName.replace(/\.pdf$/i, '.eml');
+
+  return { blob, fileName };
+}
+
+/**
+ * Gera apenas o conteúdo do cabeçalho do arquivo para preenchimento do corpo do e-mail.
+ */
+export function generateStockReportEmailHeaderText(params: GenerateReportParams): string {
+  const {
+    selectedStock,
+    todayDateFormatted,
+    activeUser,
+    branch,
+    isRecontagem = false,
+  } = params;
+
+  const stockLabel =
+    selectedStock === 'materiais'
+      ? 'MATERIAIS'
+      : selectedStock === 'equipamentos'
+        ? 'EQUIPAMENTOS'
+        : 'MATERIAIS E EQUIPAMENTOS (CONSOLIDADO)';
+
+  const lines: string[] = [
+    'GRUPO MS',
+    isRecontagem ? 'RELATÓRIO DE RECONTAGEM DE ESTOQUE' : 'CONTAGEM DE ESTOQUE',
+    'Gestão de Materiais & Equipamentos',
+    `Data da ${isRecontagem ? 'Recontagem' : 'Contagem'}: ${todayDateFormatted}`,
+  ];
+
+  if (branch) {
+    lines.push(`Base / Unidade: ${branch}`);
+  }
+  if (activeUser) {
+    lines.push(`Conferente: ${activeUser.name}`);
+  }
+  lines.push(`Estoque: ${stockLabel}`);
+  lines.push('');
+  lines.push('Segue em anexo o relatório oficial em PDF.');
+
+  return lines.join('\n');
+}
+
+/**
+ * Gera a versão HTML contendo apenas o cabeçalho do arquivo para corpo de e-mail (.eml / HTML).
+ */
+export function generateStockReportEmailHeaderHtml(params: GenerateReportParams): string {
+  const {
+    selectedStock,
+    todayDateFormatted,
+    activeUser,
+    branch,
+    isRecontagem = false,
+  } = params;
+
+  const stockLabel =
+    selectedStock === 'materiais'
+      ? 'MATERIAIS'
+      : selectedStock === 'equipamentos'
+        ? 'EQUIPAMENTOS'
+        : 'MATERIAIS E EQUIPAMENTOS (CONSOLIDADO)';
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const primaryLogoSrc = cachedGrupoMsLogoDataUrl || `${origin}${GRUPO_MS_LOGO_PATH}`;
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Relatório de Contagem - Grupo MS</title>
+</head>
+<body style="margin: 0; padding: 16px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b;">
+  <div style="max-width: 720px; margin: 0 auto; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 20px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; border-bottom: 3px solid #059669; padding-bottom: 14px;">
+      <tr>
+        <td align="left" valign="middle" style="padding-bottom: 14px; width: 42%;">
+          <img src="${primaryLogoSrc}" alt="GRUPO MS" style="display: block; max-height: 80px; max-width: 180px; width: auto; height: auto; border: 0;" />
+        </td>
+        <td align="right" valign="middle" style="padding-bottom: 14px; width: 58%; text-align: right;">
+          <div style="font-size: 17px; font-weight: 800; color: #0f172a; text-transform: uppercase;">${isRecontagem ? 'RELATÓRIO DE RECONTAGEM DE ESTOQUE' : 'CONTAGEM DE ESTOQUE'}</div>
+          <div style="font-size: 12.5px; color: #475569; margin-top: 3px;">Gestão de Materiais &amp; Equipamentos</div>
+          <div style="font-size: 12.5px; color: #059669; font-weight: 700; margin-top: 6px;">Data da ${isRecontagem ? 'Recontagem' : 'Contagem'}: ${escapeHtml(todayDateFormatted)}</div>
+          ${branch ? `<div style="font-size: 12px; color: #b45309; font-weight: 800; margin-top: 2px;">Base / Unidade: <strong>${escapeHtml(branch)}</strong></div>` : ''}
+          ${activeUser ? `<div style="font-size: 12px; color: #64748b; margin-top: 2px;">Conferente: <strong>${escapeHtml(activeUser.name)}</strong></div>` : ''}
+          <div style="font-size: 12px; color: #64748b; margin-top: 2px;">Estoque: <strong>${escapeHtml(stockLabel)}</strong></div>
+        </td>
+      </tr>
+    </table>
+    <p style="margin: 16px 0 0 0; font-size: 13px; color: #334155;">
+      Segue em anexo o relatório oficial em PDF.
+    </p>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+
 

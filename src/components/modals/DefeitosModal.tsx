@@ -269,9 +269,6 @@ export const DefeitosModal: React.FC<DefeitosModalProps> = ({ isOpen, onClose })
 
     if (frozenReportText) {
       setFrozenReportText(null);
-      try {
-        localStorage.removeItem('frozen_report_text');
-      } catch {}
     }
 
     showToast(`Defeito do patrimônio ${item.patrimony} removido da base e situação atualizada para Disponível!`);

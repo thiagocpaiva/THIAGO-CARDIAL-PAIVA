@@ -163,7 +163,7 @@ interface InventoryContextType {
   // Utilitários
   addLog: (log: Omit<SystemLog, 'id' | 'timestamp'>) => void;
   clearAllData: () => void;
-  clearSelectedData: (stock: 'materiais' | 'equipamentos' | 'ambos', branchTarget?: UnitBranch | 'AMBAS') => void;
+  clearSelectedData: (stock: 'materiais' | 'equipamentos' | 'ambos', branchTarget?: UnitBranch | 'AMBAS') => { success: boolean; message?: string };
 
   // Prévia e Preservação da Contagem
   frozenReportText: string | null;
@@ -202,7 +202,15 @@ export const getBranchStorageKey = (branch: UnitBranch, subKey: string) => {
       return `choppstock_test_pa_${subKey}`;
     case 'DELMIRO (TESTE)':
       return `choppstock_test_del_${subKey}`;
+    default:
+      return `choppstock_pa_${subKey}`;
   }
+};
+
+const normalizeProductionBranch = (branch?: string | null): 'PAULO AFONSO' | 'DELMIRO' => {
+  const clean = (branch || '').trim().toUpperCase();
+  if (clean.startsWith('DELMIRO')) return 'DELMIRO';
+  return 'PAULO AFONSO';
 };
 
 const TEST_USERS_STORAGE_KEY = 'choppstock_test_users_v1';
@@ -387,9 +395,21 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     let needsUpdate = false;
     userList = userList.map(u => {
-      if (u.registration === '2001' && !u.branch) {
+      if (isCoringaUser(u)) return u;
+      if (u.registration === '2001' && (!u.branch || isTestBranch(u.branch))) {
         needsUpdate = true;
         return { ...u, branch: 'PAULO AFONSO' as const };
+      }
+      if (u.registration === '2002' && (!u.branch || isTestBranch(u.branch))) {
+        needsUpdate = true;
+        return { ...u, branch: 'DELMIRO' as const };
+      }
+      if (u.roleLevel === 'contador') {
+        const normalized = normalizeProductionBranch(u.branch);
+        if (u.branch !== normalized) {
+          needsUpdate = true;
+          return { ...u, branch: normalized };
+        }
       }
       return u;
     });
@@ -434,6 +454,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } catch {}
     return loadProductionUsersFromStorage();
   });
+
+  const usersRef = useRef<StockUser[]>(users);
+  useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
 
   // Usuário ativo da sessão
   const [activeUser, setActiveUserState] = useState<StockUser | null>(() => {
@@ -687,6 +712,144 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return {};
   });
 
+  // Carrega todos os estados locais da base informada para os estados ativos em tela (sem jamais herdar estado de outra base)
+  const loadBranchLocalStateIntoActive = (
+    branch: UnitBranch,
+    todayStr: string,
+    options?: { includeCatalogs?: boolean; includeConfigs?: boolean; updateStatusMap?: boolean }
+  ) => {
+    const includeCatalogs = options?.includeCatalogs ?? true;
+    const includeConfigs = options?.includeConfigs ?? true;
+    const shouldUpdateStatusMap = options?.updateStatusMap ?? true;
+
+    const legacyMats = isTestBranch(branch) ? [] : [STORAGE_KEYS.MATERIALS];
+    const legacyFrzs = isTestBranch(branch) ? [] : [STORAGE_KEYS.FREEZERS];
+    const legacyEqs = isTestBranch(branch) ? [] : [STORAGE_KEYS.EQUIPMENTS];
+    const legacyEmail = isTestBranch(branch) ? [] : [STORAGE_KEYS.EMAIL_SETTINGS];
+    const legacySrv = isTestBranch(branch) ? [] : [STORAGE_KEYS.SERVER_EMAIL_CONFIG];
+
+    if (includeCatalogs) {
+      setMaterials(loadInitialBranchData(branch, 'materials', INITIAL_MATERIALS, legacyMats));
+      setFreezers(loadInitialBranchData(branch, 'freezers', INITIAL_FREEZERS, legacyFrzs));
+      setEquipments(loadInitialBranchData(branch, 'equipments', INITIAL_EQUIPMENTS, legacyEqs));
+    }
+
+    const dKey = loadInitialBranchData(branch, 'calendar_day', todayStr, []);
+    const isNewDay = dKey !== todayStr;
+
+    let backupToSet = loadInitialBranchData<LastCountBackup | null>(branch, 'last_count_backup', null, []);
+
+    if (isNewDay) {
+      try {
+        const prevMat = loadInitialBranchData<Record<string, MaterialDailyEntry>>(branch, 'today_materials', {}, []);
+        const prevEq = loadInitialBranchData<Record<string, EquipmentDailyEntry>>(branch, 'today_equipments', {}, []);
+        const prevUncat = loadInitialBranchData<UncataloguedEquipment[]>(branch, 'today_uncatalogued', [], []);
+        const hadPrev =
+          Object.values(prevMat || {}).some(hasMaterialEntryQuantity) ||
+          Object.keys(prevEq || {}).length > 0 ||
+          (Array.isArray(prevUncat) && prevUncat.length > 0);
+        if (hadPrev) {
+          backupToSet = {
+            date: dKey,
+            materials: prevMat || {},
+            equipments: prevEq || {},
+            uncatalogued: Array.isArray(prevUncat) ? prevUncat : [],
+            savedAt: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+          };
+          localStorage.setItem(getBranchStorageKey(branch, 'last_count_backup'), JSON.stringify(backupToSet));
+        }
+      } catch {}
+
+      localStorage.setItem(getBranchStorageKey(branch, 'today_materials'), JSON.stringify({}));
+      localStorage.setItem(getBranchStorageKey(branch, 'today_equipments'), JSON.stringify({}));
+      localStorage.setItem(getBranchStorageKey(branch, 'today_uncatalogued'), JSON.stringify([]));
+      localStorage.setItem(getBranchStorageKey(branch, 'recontagem_selected_ids'), JSON.stringify({}));
+      localStorage.setItem(getBranchStorageKey(branch, 'recontagem_material_counts'), JSON.stringify({}));
+      localStorage.setItem(getBranchStorageKey(branch, 'recontagem_equipment_counts'), JSON.stringify({}));
+      localStorage.removeItem(getBranchStorageKey(branch, 'count_started_by'));
+      localStorage.removeItem(getBranchStorageKey(branch, 'recontagem_target_contador'));
+      localStorage.removeItem(getBranchStorageKey(branch, 'active_contador_session'));
+      localStorage.setItem(getBranchStorageKey(branch, 'is_report_sent'), JSON.stringify(false));
+      localStorage.setItem(getBranchStorageKey(branch, 'recontagem_unlocked'), JSON.stringify(false));
+      localStorage.setItem(getBranchStorageKey(branch, 'calendar_day'), todayStr);
+    }
+
+    const mCounts = isNewDay ? {} : loadInitialBranchData<Record<string, MaterialDailyEntry>>(branch, 'today_materials', {}, []);
+    const eqCounts = isNewDay ? {} : loadInitialBranchData<Record<string, EquipmentDailyEntry>>(branch, 'today_equipments', {}, []);
+    const uncat = isNewDay ? [] : loadInitialBranchData<UncataloguedEquipment[]>(branch, 'today_uncatalogued', [], []);
+    const recSelected = isNewDay ? {} : loadInitialBranchData<Record<string, boolean>>(branch, 'recontagem_selected_ids', {}, []);
+    const recMatCounts = isNewDay ? {} : loadInitialBranchData<Record<string, MaterialDailyEntry>>(branch, 'recontagem_material_counts', {}, []);
+    const recEqCounts = isNewDay ? {} : loadInitialBranchData<Record<string, EquipmentDailyEntry>>(branch, 'recontagem_equipment_counts', {}, []);
+    const cStarted = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(branch, 'count_started_by', null, []);
+    const recTarget = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(branch, 'recontagem_target_contador', null, []);
+    const repSent = isNewDay ? false : loadInitialBranchData<boolean>(branch, 'is_report_sent', false, []);
+    const recUnlocked = isNewDay ? false : loadInitialBranchData<boolean>(branch, 'recontagem_unlocked', false, []);
+
+    let rawSess: ContadorSession | null = null;
+    if (!isNewDay) {
+      try {
+        const sessStr = localStorage.getItem(getBranchStorageKey(branch, 'active_contador_session'));
+        rawSess = sessStr ? JSON.parse(sessStr) : null;
+      } catch {
+        rawSess = null;
+      }
+    }
+
+    const hasBranchCounts = !isNewDay && (
+      Object.values(mCounts || {}).some(hasMaterialEntryQuantity) ||
+      Object.keys(eqCounts || {}).length > 0 ||
+      (Array.isArray(uncat) && uncat.length > 0)
+    );
+    const validSess = !isNewDay && ((!repSent && (Boolean(cStarted) || hasBranchCounts)) || recUnlocked) ? rawSess : null;
+
+    if (includeConfigs) {
+      const branchEmailSettings = loadInitialBranchData(branch, 'email_settings', INITIAL_EMAIL_SETTINGS, legacyEmail);
+      const branchServerConfig = loadInitialBranchData(branch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, legacySrv);
+      let branchRecipients = localStorage.getItem(getBranchStorageKey(branch, 'recipients_text'));
+      if (branchRecipients === null) {
+        branchRecipients = branchEmailSettings.emails.join(', ');
+        localStorage.setItem(getBranchStorageKey(branch, 'recipients_text'), branchRecipients);
+      }
+      setEmailSettings(branchEmailSettings);
+      setServerEmailConfig(branchServerConfig);
+      setRecipientsTextState(branchRecipients);
+    }
+
+    const frzRep = localStorage.getItem(getBranchStorageKey(branch, 'frozen_report'));
+    const lg = loadInitialBranchData(branch, 'logs', INITIAL_LOGS, []);
+
+    setTodayKey(isNewDay ? todayStr : dKey);
+    setMaterialCounts(mCounts || {});
+    setEquipmentCounts(eqCounts || {});
+    setUncataloguedEquipments(Array.isArray(uncat) ? uncat : []);
+    setLastCountBackup(backupToSet);
+    setLogs(lg);
+    setFrozenReportTextState(frzRep);
+    setActiveContadorSession(validSess);
+    setCountStartedBy(cStarted);
+    setRecontagemTargetContador(recTarget);
+    setIsReportSent(repSent);
+    setRecontagemUnlocked(recUnlocked);
+    setRecontagemSelectedIds(recSelected || {});
+    setRecontagemMaterialCounts(recMatCounts || {});
+    setRecontagemEquipmentCounts(recEqCounts || {});
+
+    const statusSnapshot: BranchConcurrencyStatus = {
+      countStartedBy: cStarted,
+      recontagemTargetContador: recTarget,
+      isReportSent: repSent,
+      recontagemUnlocked: recUnlocked,
+      activeContadorSession: validSess,
+      hasCounts: hasBranchCounts,
+    };
+
+    if (shouldUpdateStatusMap) {
+      updateBranchStatusMap(branch, statusSnapshot);
+    }
+
+    return statusSnapshot;
+  };
+
   // Alternar base ativa com carregamento integral isolado (apenas Master ou Coringa dentro das suas bases)
   const setActiveBranch = (newBranch: UnitBranch) => {
     const user = activeUserRef.current;
@@ -697,14 +860,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } else {
       if (isTestBranch(newBranch)) return;
       // Bloqueio: Usuário Contador não pode alternar de base
-      if (user?.roleLevel === 'contador' && newBranch !== user.branch) {
+      if (user?.roleLevel === 'contador' && normalizeProductionBranch(user.branch) !== newBranch) {
         return;
       }
     }
 
     if (newBranch === activeBranch) return;
     if (!isCoringaUserActive && user?.roleLevel === 'master') {
-      const targetBranchStatus = branchStatuses[newBranch];
+      const targetBranchStatus = readBranchInitialStatus(newBranch);
       const targetInProgress = targetBranchStatus.recontagemUnlocked || (
         !targetBranchStatus.isReportSent &&
         targetBranchStatus.hasCounts &&
@@ -715,103 +878,29 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return;
       }
     }
+
     isSwitchingBranchRef.current = true;
     activeBranchRef.current = newBranch;
     setActiveBranchState(newBranch);
     localStorage.setItem('choppstock_active_branch', newBranch);
 
-    const legacyMats = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.MATERIALS];
-    const legacyFrzs = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.FREEZERS];
-    const legacyEqs = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.EQUIPMENTS];
-    const legacyEmail = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.EMAIL_SETTINGS];
-    const legacySrv = isTestBranch(newBranch) ? [] : [STORAGE_KEYS.SERVER_EMAIL_CONFIG];
-
-    const mats = loadInitialBranchData(newBranch, 'materials', INITIAL_MATERIALS, legacyMats);
-    const frzs = loadInitialBranchData(newBranch, 'freezers', INITIAL_FREEZERS, legacyFrzs);
-    const eqs = loadInitialBranchData(newBranch, 'equipments', INITIAL_EQUIPMENTS, legacyEqs);
-    const dKey = loadInitialBranchData(newBranch, 'calendar_day', currentTodayKey, []);
-    const mCounts = loadInitialBranchData(newBranch, 'today_materials', {}, []);
-    const eqCounts = loadInitialBranchData(newBranch, 'today_equipments', {}, []);
-    const uncat = loadInitialBranchData(newBranch, 'today_uncatalogued', [], []);
-    const bkp = loadInitialBranchData(newBranch, 'last_count_backup', null, []);
-    const lg = loadInitialBranchData(newBranch, 'logs', INITIAL_LOGS, []);
-    const frzRep = localStorage.getItem(getBranchStorageKey(newBranch, 'frozen_report'));
-    const sessStr = localStorage.getItem(getBranchStorageKey(newBranch, 'active_contador_session'));
-    const sess = sessStr ? JSON.parse(sessStr) : null;
-
-    // Configurações e destinatários de e-mail independentes por base
-    const branchEmailSettings = loadInitialBranchData(newBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, legacyEmail);
-    const branchServerConfig = loadInitialBranchData(newBranch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, legacySrv);
-    let branchRecipients = localStorage.getItem(getBranchStorageKey(newBranch, 'recipients_text'));
-    if (branchRecipients === null) {
-      branchRecipients = branchEmailSettings.emails.join(', ');
-      localStorage.setItem(getBranchStorageKey(newBranch, 'recipients_text'), branchRecipients);
-    }
-
-    // Carrega dados de recontagem da nova base (somente do dia atual)
-    const isNewDay = dKey !== currentTodayKey;
-    const recSelected = isNewDay ? {} : loadInitialBranchData(newBranch, 'recontagem_selected_ids', {}, []);
-    const recMatCounts = isNewDay ? {} : loadInitialBranchData(newBranch, 'recontagem_material_counts', {}, []);
-    const recEqCounts = isNewDay ? {} : loadInitialBranchData(newBranch, 'recontagem_equipment_counts', {}, []);
-
-    if (isNewDay) {
-      localStorage.setItem(getBranchStorageKey(newBranch, 'today_materials'), JSON.stringify({}));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'today_equipments'), JSON.stringify({}));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'today_uncatalogued'), JSON.stringify([]));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_selected_ids'), JSON.stringify({}));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_material_counts'), JSON.stringify({}));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_equipment_counts'), JSON.stringify({}));
-      localStorage.removeItem(getBranchStorageKey(newBranch, 'count_started_by'));
-      localStorage.removeItem(getBranchStorageKey(newBranch, 'recontagem_target_contador'));
-      localStorage.removeItem(getBranchStorageKey(newBranch, 'active_contador_session'));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'is_report_sent'), JSON.stringify(false));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'recontagem_unlocked'), JSON.stringify(false));
-      localStorage.setItem(getBranchStorageKey(newBranch, 'calendar_day'), currentTodayKey);
-    }
-
-    const cStarted = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(newBranch, 'count_started_by', null, []);
-    const recTarget = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(newBranch, 'recontagem_target_contador', null, []);
-    const repSent = isNewDay ? false : loadInitialBranchData<boolean>(newBranch, 'is_report_sent', false, []);
-    const recUnlocked = isNewDay ? false : loadInitialBranchData<boolean>(newBranch, 'recontagem_unlocked', false, []);
-    const hasBranchCounts = !isNewDay && (
-      Object.values((mCounts || {}) as Record<string, MaterialDailyEntry>).some(hasMaterialEntryQuantity) ||
-      Object.keys(eqCounts || {}).length > 0 ||
-      (Array.isArray(uncat) && uncat.length > 0)
-    );
-    const validSess = !isNewDay && ((!repSent && (Boolean(cStarted) || hasBranchCounts)) || recUnlocked) ? sess : null;
-
-    setMaterials(mats);
-    setFreezers(frzs);
-    setEquipments(eqs);
-    setTodayKey(isNewDay ? currentTodayKey : dKey);
-    setMaterialCounts(isNewDay ? {} : mCounts);
-    setEquipmentCounts(isNewDay ? {} : eqCounts);
-    setUncataloguedEquipments(isNewDay ? [] : uncat);
-    setLastCountBackup(bkp);
-    setLogs(lg);
-    setFrozenReportTextState(frzRep);
-    setActiveContadorSession(validSess);
-    setCountStartedBy(cStarted);
-    setRecontagemTargetContador(recTarget);
-    setIsReportSent(repSent);
-    setRecontagemUnlocked(recUnlocked);
-    setEmailSettings(branchEmailSettings);
-    setServerEmailConfig(branchServerConfig);
-    setRecipientsTextState(branchRecipients);
-    setRecontagemSelectedIds(recSelected);
-    setRecontagemMaterialCounts(recMatCounts);
-    setRecontagemEquipmentCounts(recEqCounts);
+    loadBranchLocalStateIntoActive(newBranch, getTodayKey(), {
+      includeCatalogs: true,
+      includeConfigs: true,
+      updateStatusMap: true,
+    });
 
     setTimeout(() => {
       isSwitchingBranchRef.current = false;
-    }, 50);
+    }, 150);
   };
 
   // Bloqueio rigoroso: Usuário Contador padrão fica restrito estritamente à base cadastrada (CORINGA navega livremente nas bases teste)
   useEffect(() => {
-    if (activeUser && activeUser.roleLevel === 'contador' && !isCoringaUser(activeUser) && activeUser.branch) {
-      if (activeBranch !== activeUser.branch) {
-        setActiveBranch(activeUser.branch);
+    if (activeUser && activeUser.roleLevel === 'contador' && !isCoringaUser(activeUser)) {
+      const allowedBranch = normalizeProductionBranch(activeUser.branch);
+      if (activeBranch !== allowedBranch) {
+        setActiveBranch(allowedBranch);
       }
     }
   }, [activeUser, activeBranch]);
@@ -1178,7 +1267,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       hasCounts,
     };
 
-    updateBranchStatusMap(branch, statusObj);
+    const preserveCounts = !!options?.preserveLocalUnsentCounts;
+    updateBranchStatusMap(branch, preserveCounts ? readBranchInitialStatus(branch) : statusObj);
 
     // Salva cadastros permanentes e destinatários no localStorage da respectiva base
     if (effMaterials) {
@@ -1207,7 +1297,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    const preserveCounts = !!options?.preserveLocalUnsentCounts;
     if (!preserveCounts) {
       localStorage.setItem(getBranchStorageKey(branch, 'today_materials'), JSON.stringify(effMatCounts));
       localStorage.setItem(getBranchStorageKey(branch, 'today_equipments'), JSON.stringify(effEqCounts));
@@ -1265,10 +1354,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setRecontagemUnlocked(effRecUnlocked);
         setFrozenReportTextState(effFrozen);
         setTodayKey(todayStr);
+      } else {
+        loadBranchLocalStateIntoActive(branch, todayStr, {
+          includeCatalogs: !effMaterials || !effFreezers || !effEquipments,
+          includeConfigs: remote.emailRecipients === undefined && !remote.emailSettings && !remote.serverEmailConfig,
+          updateStatusMap: true,
+        });
       }
     }
 
-    return statusObj;
+    return preserveCounts ? readBranchInitialStatus(branch) : statusObj;
   };
 
   // Busca única apenas de perfis ao abrir a tela de login deslogado (dados das bases são baixados somente ao logar no app)
@@ -1282,6 +1377,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       if (remoteUsers && remoteUsers.length > 0) {
         const syncedList = ensureCoringaUser(remoteUsers);
+        usersRef.current = syncedList;
         setUsers(syncedList);
         localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(syncedList));
       }
@@ -1325,7 +1421,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return hasMats || hasEqs || hasUncat;
   }, [materialCounts, equipmentCounts, uncataloguedEquipments]);
 
+  // Contagem ou recontagem em andamento na base ativa (derivado estritamente do estado ao vivo da base ativa)
+  const isCountInProgress = useMemo(() => {
+    if (isCoringa || isTestBranch(activeBranch)) return false;
+    if (recontagemUnlocked) return true;
+    if (isReportSent) return false;
+    return hasCurrentBranchCounts && (Boolean(countStartedBy) || Boolean(activeContadorSession));
+  }, [isCoringa, activeBranch, recontagemUnlocked, isReportSent, hasCurrentBranchCounts, countStartedBy, activeContadorSession]);
+
   const checkBranchInProgress = (b: UnitBranch): boolean => {
+    if (b === activeBranch) return isCountInProgress;
     const st = branchStatuses[b];
     if (!st) return false;
     if (st.recontagemUnlocked) return true;
@@ -1334,14 +1439,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   // Contagem ou recontagem em andamento por base
-  const isCountInProgressPA = useMemo(() => checkBranchInProgress('PAULO AFONSO'), [branchStatuses]);
-  const isCountInProgressDEL = useMemo(() => checkBranchInProgress('DELMIRO'), [branchStatuses]);
-
-  // Contagem ou recontagem em andamento na base ativa
-  const isCountInProgress = useMemo(() => {
-    if (isCoringa) return false;
-    return checkBranchInProgress(activeBranch);
-  }, [isCoringa, activeBranch, branchStatuses]);
+  const isCountInProgressPA = useMemo(() => checkBranchInProgress('PAULO AFONSO'), [activeBranch, isCountInProgress, branchStatuses]);
+  const isCountInProgressDEL = useMemo(() => checkBranchInProgress('DELMIRO'), [activeBranch, isCountInProgress, branchStatuses]);
 
   // Bloqueio isolado por base: contagem/recontagem em uma base bloqueia somente os usuários daquela base
   const isAnyBaseCountInProgress = isCountInProgress;
@@ -1431,18 +1530,35 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     try {
       if (isSwitchingBranchRef.current) return;
       const curBranch = activeBranchRef.current;
-      const storedMat = localStorage.getItem(getBranchStorageKey(curBranch, 'today_materials'));
-      if (storedMat) {
-        try { setMaterialCounts(JSON.parse(storedMat)); } catch {}
+      const todayStr = getTodayKey();
+      const storedDay = localStorage.getItem(getBranchStorageKey(curBranch, 'calendar_day'));
+      const isRolledOver = Boolean(storedDay && storedDay !== todayStr);
+
+      if (isRolledOver) {
+        setMaterialCounts({});
+        setEquipmentCounts({});
+        setUncataloguedEquipments([]);
+        setRecontagemSelectedIds({});
+        setRecontagemMaterialCounts({});
+        setRecontagemEquipmentCounts({});
+        setFrozenReportTextState(null);
+      } else {
+        const storedMat = localStorage.getItem(getBranchStorageKey(curBranch, 'today_materials'));
+        try { setMaterialCounts(storedMat ? JSON.parse(storedMat) : {}); } catch {}
+        const storedEq = localStorage.getItem(getBranchStorageKey(curBranch, 'today_equipments'));
+        try { setEquipmentCounts(storedEq ? JSON.parse(storedEq) : {}); } catch {}
+        const storedUncat = localStorage.getItem(getBranchStorageKey(curBranch, 'today_uncatalogued'));
+        try { setUncataloguedEquipments(storedUncat ? JSON.parse(storedUncat) : []); } catch {}
+        const storedRecSelected = localStorage.getItem(getBranchStorageKey(curBranch, 'recontagem_selected_ids'));
+        try { setRecontagemSelectedIds(storedRecSelected ? JSON.parse(storedRecSelected) : {}); } catch {}
+        const storedRecMat = localStorage.getItem(getBranchStorageKey(curBranch, 'recontagem_material_counts'));
+        try { setRecontagemMaterialCounts(storedRecMat ? JSON.parse(storedRecMat) : {}); } catch {}
+        const storedRecEq = localStorage.getItem(getBranchStorageKey(curBranch, 'recontagem_equipment_counts'));
+        try { setRecontagemEquipmentCounts(storedRecEq ? JSON.parse(storedRecEq) : {}); } catch {}
+        const storedFrozen = localStorage.getItem(getBranchStorageKey(curBranch, 'frozen_report'));
+        setFrozenReportTextState(storedFrozen);
       }
-      const storedEq = localStorage.getItem(getBranchStorageKey(curBranch, 'today_equipments'));
-      if (storedEq) {
-        try { setEquipmentCounts(JSON.parse(storedEq)); } catch {}
-      }
-      const storedUncat = localStorage.getItem(getBranchStorageKey(curBranch, 'today_uncatalogued'));
-      if (storedUncat) {
-        try { setUncataloguedEquipments(JSON.parse(storedUncat)); } catch {}
-      }
+
       const statusCur = readBranchInitialStatus(curBranch);
       setActiveContadorSession(statusCur.activeContadorSession);
       setCountStartedBy(statusCur.countStartedBy);
@@ -1455,6 +1571,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         'PAULO AFONSO (TESTE)': readBranchInitialStatus('PAULO AFONSO (TESTE)'),
         'DELMIRO (TESTE)': readBranchInitialStatus('DELMIRO (TESTE)'),
       });
+
       const storedMaterials = localStorage.getItem(getBranchStorageKey(curBranch, 'materials'));
       if (storedMaterials) {
         try { setMaterials(JSON.parse(storedMaterials)); } catch {}
@@ -1470,7 +1587,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const isCoringaActive = isCoringaUser(activeUserRef.current);
       const storedUsers = localStorage.getItem(isCoringaActive ? TEST_USERS_STORAGE_KEY : STORAGE_KEYS.USERS);
       if (storedUsers) {
-        try { setUsers(ensureCoringaUser(JSON.parse(storedUsers))); } catch {}
+        try {
+          const parsedUsers = ensureCoringaUser(JSON.parse(storedUsers));
+          usersRef.current = parsedUsers;
+          setUsers(parsedUsers);
+        } catch {}
       }
       const storedServerEmail = localStorage.getItem(getBranchStorageKey(curBranch, 'server_email_config'));
       if (storedServerEmail) {
@@ -1483,18 +1604,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const storedRecipients = localStorage.getItem(getBranchStorageKey(curBranch, 'recipients_text'));
       if (storedRecipients !== null) {
         setRecipientsTextState(storedRecipients);
-      }
-      const storedRecSelected = localStorage.getItem(getBranchStorageKey(curBranch, 'recontagem_selected_ids'));
-      if (storedRecSelected) {
-        try { setRecontagemSelectedIds(JSON.parse(storedRecSelected)); } catch {}
-      }
-      const storedRecMat = localStorage.getItem(getBranchStorageKey(curBranch, 'recontagem_material_counts'));
-      if (storedRecMat) {
-        try { setRecontagemMaterialCounts(JSON.parse(storedRecMat)); } catch {}
-      }
-      const storedRecEq = localStorage.getItem(getBranchStorageKey(curBranch, 'recontagem_equipment_counts'));
-      if (storedRecEq) {
-        try { setRecontagemEquipmentCounts(JSON.parse(storedRecEq)); } catch {}
       }
     } catch {}
   };
@@ -1652,7 +1761,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     // EXIGÊNCIA: O campo "PRÉVIA DO RELATÓRIO" só será atualizado automaticamente caso seja modificado na contagem da tela Materiais
     if (frozenReportText) {
       setFrozenReportText(null);
-      localStorage.removeItem('frozen_report_text');
     }
 
     setMaterialCounts(prev => {
@@ -2829,7 +2937,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     const remoteUsers = await fetchUsersFromFirestore();
-    const effectiveUsers = ensureCoringaUser(remoteUsers && remoteUsers.length > 0 ? remoteUsers : users);
+    const effectiveUsers = ensureCoringaUser(remoteUsers && remoteUsers.length > 0 ? remoteUsers : usersRef.current);
+    usersRef.current = effectiveUsers;
     if (remoteUsers && remoteUsers.length > 0) {
       setUsers(effectiveUsers);
       localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(effectiveUsers));
@@ -2936,11 +3045,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     // 1. Atualiza a lista de usuários ao tentar logar e valida credenciais antes de baixar as bases
-    let effectiveUsers = ensureCoringaUser(users);
+    let effectiveUsers = ensureCoringaUser(usersRef.current);
     if (!skipUsersRefresh) {
       const remoteUsers = await fetchUsersFromFirestore();
       if (remoteUsers && remoteUsers.length > 0) {
         effectiveUsers = ensureCoringaUser(remoteUsers);
+        usersRef.current = effectiveUsers;
         setUsers(effectiveUsers);
         localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(effectiveUsers));
       }
@@ -2971,7 +3081,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const candidateBranch = branchChoice && !isTestBranch(branchChoice) ? branchChoice : activeBranch;
     const safeMasterBranch: UnitBranch = isTestBranch(candidateBranch) ? 'PAULO AFONSO' : candidateBranch;
     const targetBranch: UnitBranch = user.roleLevel === 'contador'
-      ? (user.branch && !isTestBranch(user.branch) ? user.branch : 'PAULO AFONSO')
+      ? normalizeProductionBranch(user.branch)
       : safeMasterBranch;
 
     // 2. Ao logar, busca do Firebase apenas os dados da(s) respectiva(s) base(s) de acesso do usuário
@@ -3177,24 +3287,32 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
     }
 
-    // Garante carregamento local completo da base alvo (caso alguma chave não tenha vindo no remote)
-    if ((!remotePA && targetBranch === 'PAULO AFONSO') || (!remoteDEL && targetBranch === 'DELMIRO')) {
-      const mats = loadInitialBranchData(targetBranch, 'materials', INITIAL_MATERIALS, [STORAGE_KEYS.MATERIALS]);
-      const frzs = loadInitialBranchData(targetBranch, 'freezers', INITIAL_FREEZERS, [STORAGE_KEYS.FREEZERS]);
-      const eqs = loadInitialBranchData(targetBranch, 'equipments', INITIAL_EQUIPMENTS, [STORAGE_KEYS.EQUIPMENTS]);
-      setMaterials(mats);
-      setFreezers(frzs);
-      setEquipments(eqs);
+    // Garante carregamento local completo da base alvo (especialmente se remote for nulo),
+    // impedindo que estados residuais da base anterior permaneçam ativos em tela
+    const activeRemote = targetBranch === 'PAULO AFONSO' ? remotePA : remoteDEL;
+    if (!activeRemote) {
+      loadBranchLocalStateIntoActive(targetBranch, todayStr, {
+        includeCatalogs: true,
+        includeConfigs: true,
+        updateStatusMap: true,
+      });
+    } else {
+      setLogs(loadInitialBranchData(targetBranch, 'logs', INITIAL_LOGS, []));
+      const branchEmailSettings = activeRemote.emailSettings || loadInitialBranchData(targetBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, [STORAGE_KEYS.EMAIL_SETTINGS]);
+      const branchServerConfig = activeRemote.serverEmailConfig || loadInitialBranchData(targetBranch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, [STORAGE_KEYS.SERVER_EMAIL_CONFIG]);
+      const branchRecipients = activeRemote.emailRecipients ?? (localStorage.getItem(getBranchStorageKey(targetBranch, 'recipients_text')) ?? branchEmailSettings.emails.join(', '));
+      setEmailSettings(branchEmailSettings);
+      setServerEmailConfig(branchServerConfig);
+      setRecipientsTextState(branchRecipients);
     }
 
-    setLogs(loadInitialBranchData(targetBranch, 'logs', INITIAL_LOGS, []));
-    const activeRemote = targetBranch === 'PAULO AFONSO' ? remotePA : remoteDEL;
-    const branchEmailSettings = activeRemote?.emailSettings || loadInitialBranchData(targetBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, [STORAGE_KEYS.EMAIL_SETTINGS]);
-    const branchServerConfig = activeRemote?.serverEmailConfig || loadInitialBranchData(targetBranch, 'server_email_config', INITIAL_SERVER_EMAIL_CONFIG, [STORAGE_KEYS.SERVER_EMAIL_CONFIG]);
-    const branchRecipients = activeRemote?.emailRecipients ?? (localStorage.getItem(getBranchStorageKey(targetBranch, 'recipients_text')) ?? branchEmailSettings.emails.join(', '));
-    setEmailSettings(branchEmailSettings);
-    setServerEmailConfig(branchServerConfig);
-    setRecipientsTextState(branchRecipients);
+    if (user.roleLevel === 'master') {
+      const otherBranch: UnitBranch = targetBranch === 'PAULO AFONSO' ? 'DELMIRO' : 'PAULO AFONSO';
+      const otherRemote = otherBranch === 'PAULO AFONSO' ? remotePA : remoteDEL;
+      if (!otherRemote) {
+        updateBranchStatusMap(otherBranch, readBranchInitialStatus(otherBranch));
+      }
+    }
 
     if (user.roleLevel === 'contador') {
       const targetStatus = targetBranch === 'PAULO AFONSO' ? statusPA : statusDEL;
@@ -3244,7 +3362,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setTimeout(() => {
       isSwitchingBranchRef.current = false;
-    }, 50);
+    }, 150);
 
     addLog({
       type: 'contagem',
@@ -3278,13 +3396,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!wasCoringa && activeUser?.roleLevel === 'contador') {
       setActiveContadorSession(null);
       localStorage.removeItem(getBranchStorageKey(activeBranch, 'active_contador_session'));
+      updateBranchStatusMap(activeBranch, prev => ({ ...prev, activeContadorSession: null }));
       broadcastSync('SESSION_UPDATE');
     }
+    setSystemNotice(null);
+    setEmptyMaterialCodesAlert(null);
     setActiveUserState(null);
     localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER);
     if (wasCoringa) {
       // Restaura lista de usuários reais e base real padrão ao sair do modo Coringa
-      setUsers(loadProductionUsersFromStorage());
+      const prodUsers = loadProductionUsersFromStorage();
+      usersRef.current = prodUsers;
+      setUsers(prodUsers);
       activeBranchRef.current = 'PAULO AFONSO';
       setActiveBranchState('PAULO AFONSO');
       localStorage.setItem('choppstock_active_branch', 'PAULO AFONSO');
@@ -3623,7 +3746,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ...userData,
           branch: userData.roleLevel === 'contador' ? toTestBranch(userData.branch) : undefined,
         }
-      : userData;
+      : {
+          ...userData,
+          branch: userData.roleLevel === 'contador' ? normalizeProductionBranch(userData.branch) : undefined,
+        };
 
     const newUser: StockUser = {
       ...safeUserData,
@@ -3632,6 +3758,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
     setUsers(prev => {
       const updated = [newUser, ...prev];
+      usersRef.current = updated;
       localStorage.setItem(isCoringa ? TEST_USERS_STORAGE_KEY : STORAGE_KEYS.USERS, JSON.stringify(updated));
       if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
@@ -3655,10 +3782,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ...updatedUser,
           branch: updatedUser.roleLevel === 'contador' ? toTestBranch(updatedUser.branch) : undefined,
         }
-      : updatedUser;
+      : {
+          ...updatedUser,
+          branch: updatedUser.roleLevel === 'contador' ? normalizeProductionBranch(updatedUser.branch) : undefined,
+        };
 
     setUsers(prev => {
       const updated = prev.map(u => u.id === normalizedUser.id ? normalizedUser : u);
+      usersRef.current = updated;
       localStorage.setItem(isCoringa ? TEST_USERS_STORAGE_KEY : STORAGE_KEYS.USERS, JSON.stringify(updated));
       if (isMaster) markMasterChangesPending('USERS');
       broadcastSync('USERS_UPDATED');
@@ -3944,12 +4075,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const clearSelectedData = (
     stock: 'materiais' | 'equipamentos' | 'ambos',
     branchTarget: UnitBranch | 'AMBAS' = activeBranch
-  ) => {
+  ): { success: boolean; message?: string } => {
     if (isMaster && !isCoringa) {
       const blocked = branchTarget === 'AMBAS'
         ? (isCountInProgressPA || isCountInProgressDEL)
         : checkBranchInProgress(branchTarget);
-      if (blocked) return;
+      if (blocked) {
+        return { success: false, message: 'Existe contagem em andamento.' };
+      }
     }
 
     const effectiveBranchList: UnitBranch[] = branchTarget === 'AMBAS'
@@ -4005,6 +4138,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (isMaster) markMasterChangesPending(branchTarget);
     broadcastSync('BASE_UPDATED');
+    return { success: true };
   };
 
   const clearAllData = () => {

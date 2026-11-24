@@ -1450,8 +1450,12 @@ export const GestaoCadastrosView: React.FC<GestaoCadastrosViewProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  clearSelectedData(clearStockTarget, clearBranchTarget);
+                  const res = clearSelectedData(clearStockTarget, clearBranchTarget);
                   setConfirmClearOpen(false);
+                  if (!res.success) {
+                    showToast(res.message || 'Existe contagem em andamento.');
+                    return;
+                  }
                   const stockText =
                     clearStockTarget === 'materiais'
                       ? 'de Materiais'

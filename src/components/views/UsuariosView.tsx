@@ -94,7 +94,12 @@ export const UsuariosView: React.FC = () => {
     setPassword(user.password || '');
     setShowPassword(false);
     setRoleLevel(user.roleLevel);
-    setBranch(user.branch ? (isCoringa ? toTestBranch(user.branch) : user.branch) : selectableBranches[0]);
+    const resolvedBranch = user.branch
+      ? (isCoringa
+          ? toTestBranch(user.branch)
+          : (user.branch === 'DELMIRO' || user.branch === 'DELMIRO (TESTE)' ? 'DELMIRO' : 'PAULO AFONSO'))
+      : selectableBranches[0];
+    setBranch(resolvedBranch);
     setStatus(user.status);
     setErrorMsg('');
     setIsModalOpen(true);

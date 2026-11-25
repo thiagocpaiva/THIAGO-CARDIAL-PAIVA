@@ -2709,7 +2709,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { synced, message: errorMsg };
   };
 
-  // Cancela a recontagem ativa pelo usuário Contador, excluindo a recontagem do mesmo e liberando o acesso ao usuário Master
+  // Cancela a recontagem ativa pelo usuário Contador, devolvendo os itens selecionados para a tela do usuário Master e liberando o acesso ao Master
   const cancelRecontagemByContador = async (): Promise<{ synced: boolean; message: string }> => {
     if (!activeUser || activeUser.roleLevel !== 'contador') {
       return { synced: false, message: 'Apenas o usuário Contador pode cancelar a recontagem ativa.' };
@@ -2720,7 +2720,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const branchToCancel = activeBranchRef.current;
 
-    setRecontagemSelectedIds({});
+    // Preserva os itens selecionados (recontagemSelectedIds) para retornarem marcados na tela do usuário Master
     setRecontagemMaterialCounts({});
     setRecontagemEquipmentCounts({});
     setLastInsertedRecountMaterialQty({});
@@ -2728,7 +2728,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRecontagemUnlocked(false);
     setActiveContadorSession(null);
 
-    localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_selected_ids'), JSON.stringify({}));
+    localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_selected_ids'), JSON.stringify(recontagemSelectedIds));
     localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_material_counts'), JSON.stringify({}));
     localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_equipment_counts'), JSON.stringify({}));
     localStorage.removeItem(getBranchStorageKey(branchToCancel, 'last_inserted_recount_mat_qty'));
@@ -2744,18 +2744,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }));
 
     if (isCoringa || isTestBranch(branchToCancel)) {
-      const localMsg = `Modo Teste: Recontagem cancelada localmente na base ${branchToCancel}.`;
+      const localMsg = `Modo Teste: Recontagem cancelada na base ${branchToCancel}. Os itens voltaram selecionados para a tela do usuário Master.`;
       setSystemNotice(localMsg);
       return { synced: true, message: localMsg };
     }
 
     let synced = false;
-    let message = `Recontagem cancelada na base ${branchToCancel}. O acesso foi liberado novamente para o usuário Master.`;
+    let message = `Recontagem cancelada na base ${branchToCancel}. Os itens voltaram selecionados para a tela do usuário Master e o acesso foi liberado novamente.`;
     try {
       await pushBranchToFirestore(
         branchToCancel,
         buildActiveBranchSyncPayload(branchToCancel, {
-          recontagemSelectedIds: {},
+          recontagemSelectedIds,
           recontagemMaterialCounts: {},
           recontagemEquipmentCounts: {},
           recontagemTargetContador: null,
@@ -2770,8 +2770,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } catch (err) {
       console.warn('Erro ao sincronizar cancelamento da recontagem com o Firestore:', err);
       message = isQuotaExceededError(err)
-        ? `Recontagem cancelada localmente na base ${branchToCancel} (cota diária do Firebase atingida).`
-        : `Recontagem cancelada localmente na base ${branchToCancel}, mas houve falha ao sincronizar com o Firebase.`;
+        ? `Recontagem cancelada localmente na base ${branchToCancel}; itens mantidos selecionados para o Master (cota diária do Firebase atingida).`
+        : `Recontagem cancelada localmente na base ${branchToCancel}; itens mantidos selecionados para o Master, mas houve falha ao sincronizar com o Firebase.`;
     }
 
     broadcastSync('RECONTAGEM_UPDATED');
@@ -2781,7 +2781,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       targetType: 'contagem',
       itemCode: 'RECOUNT-CANCEL',
       title: `Recontagem Cancelada pelo Contador [${branchToCancel}]`,
-      description: `Recontagem cancelada pelo contador ${activeUser.name} (${activeUser.registration}) na base ${branchToCancel}. Acesso liberado novamente ao usuário Master.`,
+      description: `Recontagem cancelada pelo contador ${activeUser.name} (${activeUser.registration}) na base ${branchToCancel}. Os itens voltaram selecionados para a tela do usuário Master e o acesso ao Master foi liberado.`,
     });
 
     return { synced, message };

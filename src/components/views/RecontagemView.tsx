@@ -582,7 +582,7 @@ export const RecontagemView: React.FC = () => {
         {!isMaster && recontagemUnlocked && canActiveUserRecount && (
           <div className="p-3 bg-white border border-rose-200 rounded-2xl flex items-center justify-between gap-2.5 shadow-xs">
             <p className="text-[11px] text-slate-600 font-medium leading-snug">
-              Se precisar cancelar esta recontagem, ela será excluída e o acesso do usuário Master será liberado novamente.
+              Se precisar cancelar esta recontagem, os itens voltarão selecionados para a tela do usuário Master e o acesso do Master será liberado novamente.
             </p>
             <button
               type="button"
@@ -610,7 +610,7 @@ export const RecontagemView: React.FC = () => {
                 </div>
               </div>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Deseja excluir esta recontagem ativa? Os itens selecionados para recontagem serão removidos e o acesso ao usuário Master será liberado novamente.
+                Deseja cancelar esta recontagem ativa? Os itens voltarão selecionados para a tela do usuário Master e o acesso ao usuário Master será liberado novamente.
               </p>
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
@@ -888,7 +888,22 @@ export const RecontagemView: React.FC = () => {
               {!isMaster && !recontagemUnlocked && (
                 <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 text-[11px] font-bold flex items-center gap-2">
                   <Lock className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>Recontagem já enviada. As telas permanecem bloqueadas até o usuário Master zerar a contagem.</span>
+                  <span>
+                    {Object.values(recontagemMaterialCounts).some(
+                      m =>
+                        (m.disponivel || 0) > 0 ||
+                        (m.danificado || 0) > 0 ||
+                        (m.barrilCheio || 0) > 0 ||
+                        (m.barrilVazio || 0) > 0 ||
+                        (m.barrilEmRota || 0) > 0 ||
+                        (m.co2Cheio || 0) > 0 ||
+                        (m.co2Mexido || 0) > 0 ||
+                        (m.co2Vazio || 0) > 0 ||
+                        (m.co2EmRota || 0) > 0
+                    ) || Object.keys(recontagemEquipmentCounts).some(id => Boolean(recontagemEquipmentCounts[id]?.status))
+                      ? 'Recontagem já enviada. As telas permanecem bloqueadas até o usuário Master zerar a contagem.'
+                      : 'Recontagem cancelada ou aguardando nova liberação do usuário Master. Os itens selecionados retornaram para a tela do usuário Master.'}
+                  </span>
                 </div>
               )}
               <button

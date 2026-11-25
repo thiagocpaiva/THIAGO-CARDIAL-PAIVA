@@ -516,7 +516,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const parsedCsb: CountStartedBy | null = csbRaw ? JSON.parse(csbRaw) : null;
       const parsedRecTarget: CountStartedBy | null = recTargetRaw ? JSON.parse(recTargetRaw) : null;
-      const parsedIrs: boolean = irsRaw ? JSON.parse(irsRaw) : false;
       const parsedRecUnlocked: boolean = recUnlockedRaw ? JSON.parse(recUnlockedRaw) : false;
       const parsedMats: Record<string, MaterialDailyEntry> = matsRaw ? JSON.parse(matsRaw) : {};
       const parsedEqs: Record<string, EquipmentDailyEntry> = eqsRaw ? JSON.parse(eqsRaw) : {};
@@ -526,6 +525,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         Object.values(parsedMats).some(hasMaterialEntryQuantity) ||
         Object.keys(parsedEqs).length > 0 ||
         parsedUncat.length > 0;
+
+      // Relatório enviado só permanece bloqueando se houver itens contados na base
+      const parsedIrs: boolean = (irsRaw ? JSON.parse(irsRaw) : false) && hasCounts;
 
       // Mantém sessão ativa se houver contagem iniciada não enviada OU recontagem liberada ativa
       const parsedSess: ContadorSession | null =
@@ -782,7 +784,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const recEqCounts = isNewDay ? {} : loadInitialBranchData<Record<string, EquipmentDailyEntry>>(branch, 'recontagem_equipment_counts', {}, []);
     const cStarted = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(branch, 'count_started_by', null, []);
     const recTarget = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(branch, 'recontagem_target_contador', null, []);
-    const repSent = isNewDay ? false : loadInitialBranchData<boolean>(branch, 'is_report_sent', false, []);
+    const rawRepSent = isNewDay ? false : loadInitialBranchData<boolean>(branch, 'is_report_sent', false, []);
     const recUnlocked = isNewDay ? false : loadInitialBranchData<boolean>(branch, 'recontagem_unlocked', false, []);
 
     let rawSess: ContadorSession | null = null;
@@ -800,6 +802,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       Object.keys(eqCounts || {}).length > 0 ||
       (Array.isArray(uncat) && uncat.length > 0)
     );
+    const repSent = rawRepSent && hasBranchCounts;
+    if (!isNewDay && rawRepSent && !repSent) {
+      localStorage.setItem(getBranchStorageKey(branch, 'is_report_sent'), JSON.stringify(false));
+    }
     const validSess = !isNewDay && ((!repSent && (Boolean(cStarted) || hasBranchCounts)) || recUnlocked) ? rawSess : null;
 
     if (includeConfigs) {
@@ -1221,7 +1227,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const effCountStartedBy = isPreviousDay ? null : (remote.countStartedBy || null);
     const effRecTargetContador = isPreviousDay ? null : (remote.recontagemTargetContador || null);
-    const effIsReportSent = isPreviousDay ? false : !!remote.isReportSent;
     const effRecUnlocked = isPreviousDay ? false : !!remote.recontagemUnlocked;
     const effMatCounts = isPreviousDay ? {} : (remote.materialCounts || {});
     const effEqCounts = isPreviousDay ? {} : (remote.equipmentCounts || {});
@@ -1252,6 +1257,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       Object.values(effMatCounts).some(hasMaterialEntryQuantity) ||
       Object.keys(effEqCounts).length > 0 ||
       effUncat.length > 0;
+    const effIsReportSent = isPreviousDay ? false : (!!remote.isReportSent && hasCounts);
 
     // A sessão só permanece ativa se houver contagem efetivamente iniciada não enviada OU recontagem liberada ativa
     const effSession = (isPreviousDay || (!effRecUnlocked && (effIsReportSent || (!effCountStartedBy && !hasCounts))))
@@ -2384,10 +2390,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const isIsolatedTest = isCoringa || isTestBranch(branchToMark);
 
     if (branchToMark === activeBranch) {
-      if (!isIsolatedTest) {
-        setIsReportSent(true);
-        localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(true));
-      }
+      const shouldLockSent = !isIsolatedTest && hasCurrentBranchCounts;
+      setIsReportSent(shouldLockSent);
+      localStorage.setItem(getBranchStorageKey(branchToMark, 'is_report_sent'), JSON.stringify(shouldLockSent));
       setRecontagemUnlocked(false);
       setActiveContadorSession(null);
       localStorage.setItem(getBranchStorageKey(branchToMark, 'recontagem_unlocked'), JSON.stringify(false));
@@ -2395,7 +2400,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       updateBranchStatusMap(branchToMark, {
         countStartedBy,
         recontagemTargetContador,
-        isReportSent: !isIsolatedTest,
+        isReportSent: shouldLockSent,
         recontagemUnlocked: false,
         activeContadorSession: null,
         hasCounts: hasCurrentBranchCounts,
@@ -2421,9 +2426,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     let synced = false;
     let errorMsg: string | undefined;
     try {
+      const hasCountsForRemote = branchToMark === activeBranch ? hasCurrentBranchCounts : true;
       await pushBranchToFirestore(branchToMark, buildActiveBranchSyncPayload(branchToMark, {
         activeContadorSession: null,
-        isReportSent: true,
+        isReportSent: hasCountsForRemote,
         recontagemUnlocked: false,
         countDate: todayStr,
       }));
@@ -3169,22 +3175,25 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       } catch {}
 
-      const rawCountStartedBy = remote !== null
-        ? (remoteStarted || (!remoteReportSent && localHasUnsentCounts ? localStarted : null))
-        : localStarted;
       const recTargetContadorVal = remote !== null ? remoteRecTarget : localRecTarget;
-      const isReportSentVal = remote !== null ? remoteReportSent : localReportSent;
       const recontagemUnlockedVal = remote !== null ? remoteRecontagemUnlocked : localRecontagemUnlocked;
+      const rawIsReportSentVal = remote !== null ? remoteReportSent : localReportSent;
       const hasCountsVal = remote !== null
-        ? (remoteHasCounts || (!remoteReportSent && localHasUnsentCounts))
+        ? (remoteHasCounts || (!rawIsReportSentVal && localHasUnsentCounts))
         : localHasCounts;
+
+      // Só considera relatório enviado/bloqueado se realmente existirem itens contados na base
+      const isReportSentVal = rawIsReportSentVal && hasCountsVal;
+      const rawCountStartedBy = remote !== null
+        ? (remoteStarted || (!isReportSentVal && localHasUnsentCounts ? localStarted : null))
+        : localStarted;
 
       // A contagem só é considerada iniciada quando houver pelo menos 1 quantidade/item inserido
       const countStartedByVal = (hasCountsVal || isReportSentVal) ? rawCountStartedBy : null;
       const activeSessionVal = (!recontagemUnlockedVal && (isReportSentVal || !hasCountsVal || !countStartedByVal))
         ? null
         : (remote !== null
-            ? (remoteSession || (!remoteReportSent && localHasUnsentCounts ? localSession : null))
+            ? (remoteSession || (!isReportSentVal && localHasUnsentCounts ? localSession : null))
             : localSession);
 
       const isCountInProgressVal =
@@ -3231,15 +3240,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (!matchesAuthorizedRecount) {
           return {
             success: false,
-            message: 'Existe contagem em andamento.'
+            message: 'Existe recontagem em andamento direcionada a outro contador.'
           };
         }
       } else {
-        // Sem recontagem liberada: se o relatório já foi enviado, bloqueia todos os contadores até o Master zerar a contagem
+        // Sem recontagem liberada: se o relatório com itens contados já foi enviado, bloqueia todos os contadores até o Master zerar a contagem
         if (targetStatus.isReportSent) {
           return {
             success: false,
-            message: 'Existe contagem em andamento.'
+            message: 'A contagem de hoje já foi enviada por e-mail. Aguarde o usuário Master zerar e sincronizar a contagem para iniciar uma nova.'
           };
         }
 
@@ -3250,14 +3259,20 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           if (!isInitiator) {
             return {
               success: false,
-              message: 'Existe contagem em andamento.'
+              message: `A contagem já foi iniciada pelo contador ${targetStatus.countStartedBy.userName} (Matrícula: ${targetStatus.countStartedBy.registration}).`
             };
           }
         }
       }
 
       // Bloqueia outro contador se houver sessão ativa em andamento (contagem inicial ou recontagem)
-      if (targetStatus.isCountInProgress && targetStatus.activeSession && targetStatus.activeSession.userId && targetStatus.activeSession.userId !== user.id) {
+      const isSameSessionUser = Boolean(
+        targetStatus.activeSession &&
+        (targetStatus.activeSession.userId === user.id ||
+          (targetStatus.activeSession.registration &&
+            targetStatus.activeSession.registration.toUpperCase() === cleanReg))
+      );
+      if (targetStatus.isCountInProgress && targetStatus.activeSession && targetStatus.activeSession.userId && !isSameSessionUser) {
         const isRecent = !targetStatus.activeSession.lastHeartbeat || (Date.now() - targetStatus.activeSession.lastHeartbeat < 12 * 60 * 60 * 1000);
         if (isRecent) {
           return {
@@ -4013,6 +4028,32 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setUncataloguedEquipments([]);
         localStorage.removeItem(getBranchStorageKey(branchToUse, 'today_equipments'));
         localStorage.removeItem(getBranchStorageKey(branchToUse, 'today_uncatalogued'));
+      }
+      const remainingMats = (effectiveStock === 'materiais' || effectiveStock === 'ambos')
+        ? false
+        : Object.values(materialCounts).some(hasMaterialEntryQuantity);
+      const remainingEqs = (effectiveStock === 'equipamentos' || effectiveStock === 'ambos')
+        ? false
+        : (Object.keys(equipmentCounts).length > 0 || uncataloguedEquipments.length > 0);
+      if (!remainingMats && !remainingEqs) {
+        setCountStartedBy(null);
+        setRecontagemTargetContador(null);
+        setActiveContadorSession(null);
+        setIsReportSent(false);
+        setRecontagemUnlocked(false);
+        localStorage.removeItem(getBranchStorageKey(branchToUse, 'count_started_by'));
+        localStorage.removeItem(getBranchStorageKey(branchToUse, 'recontagem_target_contador'));
+        localStorage.removeItem(getBranchStorageKey(branchToUse, 'active_contador_session'));
+        localStorage.setItem(getBranchStorageKey(branchToUse, 'is_report_sent'), JSON.stringify(false));
+        localStorage.setItem(getBranchStorageKey(branchToUse, 'recontagem_unlocked'), JSON.stringify(false));
+        updateBranchStatusMap(branchToUse, {
+          countStartedBy: null,
+          recontagemTargetContador: null,
+          isReportSent: false,
+          recontagemUnlocked: false,
+          activeContadorSession: null,
+          hasCounts: false,
+        });
       }
     } else {
       // mode === 'append'

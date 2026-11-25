@@ -50,7 +50,9 @@ export const EquipamentosView: React.FC = () => {
     isContadorActive,
     canActiveUserCount,
     cantCountReason,
-    isAnyBaseCountInProgress
+    isAnyBaseCountInProgress,
+    lastInsertedEquipmentPatrimony,
+    recordLastInsertedEquipmentPatrimony,
   } = useInventory();
 
   // Filtro de conferência (Todos | Freezers | Chopeiras | Não Cadastrados)
@@ -208,6 +210,7 @@ export const EquipamentosView: React.FC = () => {
         showFeedback(`✅ ${codeStr}Patrimônio: ${item.patrimony} - ${item.name} (${kindName}) contado como Disponível!`, 'success');
       }
 
+      recordLastInsertedEquipmentPatrimony(item.patrimony);
       setPatrimonyInput('');
       setPatrimonyInputError('');
       inputRef.current?.focus();
@@ -268,6 +271,7 @@ export const EquipamentosView: React.FC = () => {
         damageDescription: defDesc,
       });
 
+      recordLastInsertedEquipmentPatrimony(item.patrimony);
       showFeedback(`⚠️ [${item.code}] Patrimônio: ${item.patrimony} - ${item.name} registrado como DANIFICADO (Defeito: ${defDesc})!`, 'warning');
       setIsDamagedModalOpen(false);
       setDamagedPatrimony('');
@@ -306,6 +310,7 @@ export const EquipamentosView: React.FC = () => {
       });
       showFeedback(`✅ Freezer ${codeStr}Patrimônio: ${newFreezer.patrimony} - ${newFreezer.name} cadastrado na base e contado como Disponível!`, 'success');
     }
+    recordLastInsertedEquipmentPatrimony(newFreezer.patrimony);
     setPatrimonyInput('');
     setIsPendingDamagedRegistration(false);
     setPendingDamagedDesc('');
@@ -330,6 +335,7 @@ export const EquipamentosView: React.FC = () => {
       });
       showFeedback(`✅ Chopeira ${codeStr}Patrimônio: ${newEquip.patrimony} - ${newEquip.name} cadastrada na base e contada como Disponível!`, 'success');
     }
+    recordLastInsertedEquipmentPatrimony(newEquip.patrimony);
     setPatrimonyInput('');
     setIsPendingDamagedRegistration(false);
     setPendingDamagedDesc('');
@@ -350,6 +356,7 @@ export const EquipamentosView: React.FC = () => {
       damageDescription: pendingUncatIsDamaged ? (pendingUncatDamageDesc.trim() || 'Danificado') : undefined,
     });
 
+    recordLastInsertedEquipmentPatrimony(pat);
     showFeedback(`Patrimônio ${pat} adicionado aos Equipamentos Não Cadastrados (${pendingUncatIsDamaged ? 'Danificado' : 'Disponível'})!`, 'success');
     setIsUncatPromptOpen(false);
     setPatrimonyInput('');
@@ -492,6 +499,13 @@ export const EquipamentosView: React.FC = () => {
   // isso tanto para Master quanto para Contador, apenas para patrimônios não cadastrados previamente na base.
   const handleDeleteUnregisteredItem = (patrimony: string, itemId: string) => {
     deleteUnregisteredItemEntireHistory(patrimony, itemId);
+    if (
+      lastInsertedEquipmentPatrimony &&
+      patrimony.toUpperCase() === lastInsertedEquipmentPatrimony.toUpperCase() &&
+      totalCounted <= 1
+    ) {
+      recordLastInsertedEquipmentPatrimony('');
+    }
     showFeedback(`Patrimônio ${patrimony} excluído da contagem e da base "Não Cadastrados".`, 'warning');
   };
 
@@ -841,6 +855,18 @@ export const EquipamentosView: React.FC = () => {
               <MessageSquareText className="w-4 h-4 text-sky-600 shrink-0" />
               <span>Editar observações dos equipamentos</span>
             </button>
+
+            <div
+              className="px-3 py-1.5 bg-cyan-50 border border-cyan-300 rounded-xl flex items-center gap-1.5 shadow-xs"
+              title="Último patrimônio inserido na contagem de equipamentos"
+            >
+              <span className="text-[10px] font-black uppercase tracking-wider text-cyan-800">
+                Último Patrimônio:
+              </span>
+              <span className="font-mono text-xs font-black text-cyan-950 bg-white px-2 py-0.5 rounded-lg border border-cyan-200 min-w-[64px] text-center">
+                {lastInsertedEquipmentPatrimony || '-'}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -1028,6 +1054,13 @@ export const EquipamentosView: React.FC = () => {
                         type="button"
                         onClick={() => {
                           removeEquipmentCount(eq.id);
+                          if (
+                            lastInsertedEquipmentPatrimony &&
+                            eq.patrimony.toUpperCase() === lastInsertedEquipmentPatrimony.toUpperCase() &&
+                            totalCounted <= 1
+                          ) {
+                            recordLastInsertedEquipmentPatrimony('');
+                          }
                           const codeStr = eq.code && eq.code.trim() ? `[${eq.code}] ` : '';
                           showFeedback(`Equipamento ${codeStr}Patrimônio ${eq.patrimony} removido da contagem.`, 'warning');
                         }}
@@ -1103,6 +1136,13 @@ export const EquipamentosView: React.FC = () => {
                         type="button"
                         onClick={() => {
                           removeEquipmentCount(eq.id);
+                          if (
+                            lastInsertedEquipmentPatrimony &&
+                            eq.patrimony.toUpperCase() === lastInsertedEquipmentPatrimony.toUpperCase() &&
+                            totalCounted <= 1
+                          ) {
+                            recordLastInsertedEquipmentPatrimony('');
+                          }
                           const codeStr = eq.code && eq.code.trim() ? `[${eq.code}] ` : '';
                           showFeedback(`Equipamento ${codeStr}Patrimônio ${eq.patrimony} removido da contagem.`, 'warning');
                         }}

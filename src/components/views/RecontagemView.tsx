@@ -17,13 +17,26 @@ import {
   PlusCircle,
   RefreshCw,
   UserCheck,
-  Users
+  Users,
+  Mail,
+  FileDown,
+  Share2
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
-import { MaterialItem, FreezerItem, EquipmentItem, MaterialDailyEntry, EquipmentDailyEntry, isCoringaUser } from '../../types/inventory';
-import { generateStockReportText, generateStockReportEmailTableText, generateStockReportHtml } from '../../utils/reportGenerator';
+import { FreezerItem, EquipmentItem, MaterialDailyEntry, EquipmentDailyEntry, isCoringaUser } from '../../types/inventory';
+import {
+  generateStockReportText,
+  generateStockReportEmailHeaderText,
+  generateStockReportEmailHeaderHtml,
+  generateStockReportPdfSync,
+  generateStockReportEmlBlob,
+  GeneratedPdfReport,
+  preloadNormalizedGrupoMsLogo,
+} from '../../utils/reportGenerator';
 import { sendEmailDirectly } from '../../utils/emailSender';
 import { GrupoMSBrand } from '../common/GrupoMSBrand';
+import { MaterialCountingCard } from '../common/MaterialCountingCard';
+import { CATEGORIAS_MATERIAIS } from '../modals/CadastrarMaterialModal';
 
 export const RecontagemView: React.FC = () => {
   const {
@@ -55,6 +68,8 @@ export const RecontagemView: React.FC = () => {
     updateRecontagemMaterialCount,
     updateRecontagemEquipmentCount,
     recontagemSelectedCount,
+    lastInsertedRecountMaterialQty,
+    recordLastInsertedRecountMaterialQty,
     todayDateFormatted,
     defaultSenderEmail,
     emailSettings,
@@ -71,6 +86,13 @@ export const RecontagemView: React.FC = () => {
   const [isCancellingRecount, setIsCancellingRecount] = useState(false);
   const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState(false);
   const [selectedTargetContadorId, setSelectedTargetContadorId] = useState<string>('');
+  const [lastGeneratedPdf, setLastGeneratedPdf] = useState<{
+    pdf: GeneratedPdfReport;
+    eml: { blob: Blob; fileName: string };
+    subject: string;
+    shareText: string;
+    mailtoUrl: string;
+  } | null>(null);
 
   // No Master, permite alternar entre a tela de Seleção e a Prévia do Contador
   const [masterViewMode, setMasterViewMode] = useState<'selecao' | 'contador'>('selecao');
@@ -78,9 +100,51 @@ export const RecontagemView: React.FC = () => {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [sendResultMsg, setSendResultMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    preloadNormalizedGrupoMsLogo().catch(() => {});
+  }, []);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
+    setTimeout(() => setToastMessage(null), 5000);
+  };
+
+  const triggerFileDownload = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+
+  const buildSafeMailtoUrl = (to: string, cc: string, subject: string, fullBody: string): string => {
+    const queryParts: string[] = [];
+    if (cc) queryParts.push(`cc=${encodeURIComponent(cc)}`);
+    queryParts.push(`subject=${encodeURIComponent(subject)}`);
+
+    const prefix = `mailto:${encodeURIComponent(to)}?${queryParts.join('&')}&body=`;
+    const maxTotalLength = 1850;
+    const encodedFullBody = encodeURIComponent(fullBody);
+
+    if (prefix.length + encodedFullBody.length <= maxTotalLength) {
+      return `${prefix}${encodedFullBody}`;
+    }
+
+    const suffixNotice = `\n\n[Relatório completo gerado no arquivo PDF anexo/baixado e copiado para a área de transferência.]`;
+    let candidate = fullBody.slice(0, 950);
+    const lastBreak = candidate.lastIndexOf('\n');
+    if (lastBreak > 300) {
+      candidate = candidate.slice(0, lastBreak);
+    }
+    let truncatedBody = `${candidate}${suffixNotice}`;
+    while (prefix.length + encodeURIComponent(truncatedBody).length > maxTotalLength && candidate.length > 100) {
+      candidate = candidate.slice(0, Math.floor(candidate.length * 0.75));
+      truncatedBody = `${candidate}${suffixNotice}`;
+    }
+    return `${prefix}${encodeURIComponent(truncatedBody)}`;
   };
 
   // Lista de usuários contadores ativos pertencentes à base atualmente logada (nunca inclui CORINGA)
@@ -262,7 +326,7 @@ export const RecontagemView: React.FC = () => {
     return 'materiais';
   }, [selectedMaterials.length, selectedFreezers.length, selectedEquipments.length]);
 
-  // Texto da Prévia do Relatório da Recontagem
+  // Texto da Prévia do Relatório da Recontagem (1ª Contagem x Recontagem x Diferença)
   const recountReportText = useMemo(() => {
     return generateStockReportText({
       selectedStock: recountStockType,
@@ -276,6 +340,8 @@ export const RecontagemView: React.FC = () => {
       uncataloguedEquipments: [],
       materialCounts: recontagemMaterialCounts,
       equipmentCounts: recontagemEquipmentCounts,
+      initialMaterialCounts: materialCounts,
+      initialEquipmentCounts: equipmentCounts,
       includeEquipmentDefects: false,
       branch: activeBranch,
       isMobile: isPhoneFrame,
@@ -292,11 +358,13 @@ export const RecontagemView: React.FC = () => {
     selectedEquipments,
     recontagemMaterialCounts,
     recontagemEquipmentCounts,
+    materialCounts,
+    equipmentCounts,
     activeBranch,
     isPhoneFrame,
   ]);
 
-  // Enviar E-mail da Recontagem (mesmo formato em tabela e sincroniza com o Firebase)
+  // Enviar E-mail da Recontagem com PDF comparativo (1ª Contagem, Recontagem e Diferença) anexado
   const handleSendRecountEmail = async () => {
     if (isSendingRecountEmail) return;
     setSendResultMsg(null);
@@ -313,93 +381,173 @@ export const RecontagemView: React.FC = () => {
 
     const effectiveTo = primaryTo || (configuredRecipients.length > 0 ? configuredRecipients[0] : '');
     const effectiveCc = primaryTo ? ccStr : configuredRecipients.slice(1).join(',');
+    const allRecipients = effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients;
     const subject = `[${activeBranch}] Relatório de Recontagem de Estoque - ${todayDateFormatted}`;
 
-    const reportHtml = generateStockReportHtml({
-      selectedStock: recountStockType,
-      todayDateFormatted,
-      activeUser,
-      defaultSenderEmail,
-      recipients: effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients,
-      materials: selectedMaterials,
-      freezers: selectedFreezers,
-      equipments: selectedEquipments,
-      uncataloguedEquipments: [],
-      materialCounts: recontagemMaterialCounts,
-      equipmentCounts: recontagemEquipmentCounts,
-      includeEquipmentDefects: false,
-      branch: activeBranch,
-      isRecontagem: true,
-    });
+    setIsSendingRecountEmail(true);
+    try {
+      const reportParams = {
+        selectedStock: recountStockType,
+        todayDateFormatted,
+        activeUser,
+        defaultSenderEmail,
+        recipients: allRecipients,
+        materials: selectedMaterials,
+        freezers: selectedFreezers,
+        equipments: selectedEquipments,
+        uncataloguedEquipments: [],
+        materialCounts: recontagemMaterialCounts,
+        equipmentCounts: recontagemEquipmentCounts,
+        initialMaterialCounts: materialCounts,
+        initialEquipmentCounts: equipmentCounts,
+        includeEquipmentDefects: false,
+        branch: activeBranch,
+        isRecontagem: true,
+      };
 
-    const emailTableBody = generateStockReportEmailTableText({
-      selectedStock: recountStockType,
-      todayDateFormatted,
-      activeUser,
-      defaultSenderEmail,
-      recipients: effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients,
-      materials: selectedMaterials,
-      freezers: selectedFreezers,
-      equipments: selectedEquipments,
-      uncataloguedEquipments: [],
-      materialCounts: recontagemMaterialCounts,
-      equipmentCounts: recontagemEquipmentCounts,
-      includeEquipmentDefects: false,
-      branch: activeBranch,
-      isMobile: isPhoneFrame,
-      isRecontagem: true,
-    });
+      const pdfReport = generateStockReportPdfSync(reportParams);
+      const emailHeaderHtml = generateStockReportEmailHeaderHtml(reportParams);
+      const emailHeaderBody = generateStockReportEmailHeaderText(reportParams);
+      const emlDraft = generateStockReportEmlBlob({
+        to: effectiveTo,
+        cc: effectiveCc || undefined,
+        subject,
+        htmlBody: emailHeaderHtml,
+        pdf: pdfReport,
+      });
 
-    // Copia relatório em formato tabela (HTML e texto) para a área de transferência
-    if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
-      try {
-        const blobText = new Blob([emailTableBody], { type: 'text/plain' });
-        const blobHtml = new Blob([reportHtml], { type: 'text/html' });
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            'text/plain': blobText,
-            'text/html': blobHtml,
-          }),
-        ]);
-      } catch {
-        navigator.clipboard.writeText(emailTableBody).catch(() => {});
+      const mailtoUrl = buildSafeMailtoUrl(effectiveTo, effectiveCc, subject, emailHeaderBody);
+      const shareText = emailHeaderBody;
+
+      setLastGeneratedPdf({
+        pdf: pdfReport,
+        eml: emlDraft,
+        subject,
+        shareText,
+        mailtoUrl,
+      });
+
+      const syncPromise = !isMaster ? markRecountAsSent() : Promise.resolve({ synced: true, message: '' });
+
+      if (navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        try {
+          const blobText = new Blob([emailHeaderBody], { type: 'text/plain' });
+          const blobHtml = new Blob([emailHeaderHtml], { type: 'text/html' });
+          navigator.clipboard
+            .write([
+              new ClipboardItem({
+                'text/plain': blobText,
+                'text/html': blobHtml,
+              }),
+            ])
+            .catch(() => {
+              navigator.clipboard?.writeText(emailHeaderBody).catch(() => {});
+            });
+        } catch {
+          navigator.clipboard.writeText(emailHeaderBody).catch(() => {});
+        }
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(emailHeaderBody).catch(() => {});
       }
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(emailTableBody).catch(() => {});
-    }
 
-    // Tenta envio em segundo plano se houver servidor configurado
-    sendEmailDirectly({
-      fromEmail: serverEmailConfig?.senderEmail || defaultSenderEmail,
-      senderName: serverEmailConfig?.senderName || 'RECONTAGEM DE ESTOQUE',
-      toEmails: effectiveTo ? [effectiveTo, ...ccEmails] : configuredRecipients,
-      subject,
-      bodyText: emailTableBody,
-      htmlBody: reportHtml,
-      smtpConfig: serverEmailConfig,
-    }).catch(() => {});
+      // Tenta envio em segundo plano com PDF comparativo anexado se houver servidor configurado
+      sendEmailDirectly({
+        fromEmail: serverEmailConfig?.senderEmail || defaultSenderEmail,
+        senderName: serverEmailConfig?.senderName || 'RECONTAGEM DE ESTOQUE',
+        toEmails: allRecipients,
+        subject,
+        bodyText: emailHeaderBody,
+        htmlBody: emailHeaderHtml,
+        attachments: [
+          {
+            filename: pdfReport.fileName,
+            contentBase64: pdfReport.base64,
+            contentType: 'application/pdf',
+          },
+        ],
+        smtpConfig: serverEmailConfig,
+      }).catch(() => {});
 
-    // Sincroniza os dados da recontagem com o Firebase e conclui a liberação
-    if (!isMaster) {
-      setIsSendingRecountEmail(true);
-      try {
-        const syncRes = await markRecountAsSent();
+      const canShareFiles =
+        typeof navigator !== 'undefined' &&
+        typeof navigator.share === 'function' &&
+        (!navigator.canShare || navigator.canShare({ files: [pdfReport.file] }));
+
+      let attachedDirectlyViaShare = false;
+      let userCancelledShare = false;
+
+      if (canShareFiles) {
+        try {
+          await navigator.share({
+            title: subject,
+            text: shareText,
+            files: [pdfReport.file],
+          });
+          attachedDirectlyViaShare = true;
+        } catch (shareErr: any) {
+          if (shareErr?.name === 'AbortError') {
+            userCancelledShare = true;
+          }
+        }
+      }
+
+      const syncRes = await syncPromise;
+
+      if (attachedDirectlyViaShare) {
         if (!syncRes.synced && syncRes.message) {
           showToast(syncRes.message);
+        } else {
+          setSendResultMsg(`Recontagem sincronizada e PDF comparativo (${pdfReport.fileName}) anexado ao aplicativo selecionado!`);
         }
-      } finally {
-        setIsSendingRecountEmail(false);
+        return;
+      }
+
+      if (userCancelledShare) {
+        setSendResultMsg('Compartilhamento cancelado. Use as opções abaixo para abrir o app de e-mail, compartilhar ou baixar o PDF comparativo.');
+        return;
+      }
+
+      // Em Desktop ou navegadores sem Web Share de arquivos: baixa o PDF comparativo e abre o app de e-mail com destinatários preenchidos
+      triggerFileDownload(pdfReport.blob, pdfReport.fileName);
+      window.location.href = mailtoUrl;
+
+      if (!syncRes.synced && syncRes.message) {
+        showToast(`${syncRes.message} PDF (${pdfReport.fileName}) baixado e app de e-mail aberto.`);
+      } else {
+        setSendResultMsg(`App de e-mail aberto com destinatários preenchidos e PDF comparativo (${pdfReport.fileName}) baixado para anexo!`);
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Erro ao gerar o PDF da recontagem para envio por e-mail.');
+    } finally {
+      setIsSendingRecountEmail(false);
+    }
+  };
+
+  const handleShareGeneratedPdf = async () => {
+    if (!lastGeneratedPdf) return;
+    const { pdf, subject, shareText, mailtoUrl } = lastGeneratedPdf;
+    const canShareFiles =
+      typeof navigator !== 'undefined' &&
+      typeof navigator.share === 'function' &&
+      (!navigator.canShare || navigator.canShare({ files: [pdf.file] }));
+
+    if (canShareFiles) {
+      try {
+        await navigator.share({
+          title: subject,
+          text: shareText,
+          files: [pdf.file],
+        });
+        showToast(`PDF (${pdf.fileName}) anexado ao aplicativo selecionado!`);
+        return;
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
       }
     }
 
-    // Abre programa de e-mail padrão do dispositivo
-    let mailtoUrl = `mailto:${encodeURIComponent(effectiveTo)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailTableBody)}`;
-    if (effectiveCc) {
-      mailtoUrl += `&cc=${encodeURIComponent(effectiveCc)}`;
-    }
+    triggerFileDownload(pdf.blob, pdf.fileName);
     window.location.href = mailtoUrl;
-
-    setSendResultMsg('Recontagem sincronizada, aplicativo de e-mail acionado e relatório copiado para a área de transferência!');
+    showToast(`PDF (${pdf.fileName}) baixado e app de e-mail aberto!`);
   };
 
   // =========================================================================
@@ -529,276 +677,24 @@ export const RecontagemView: React.FC = () => {
                   </h3>
                 </div>
 
-                <div className="space-y-2.5">
+                <div className="space-y-3">
                   {selectedMaterials.map(mat => {
                     const count = recontagemMaterialCounts[mat.id] || { itemId: mat.id, disponivel: 0, danificado: 0 };
-                    const isBarril = mat.category === 'barril' || mat.name.toLowerCase().includes('barril');
-                    const isCO2 = mat.category === 'co2' || mat.name.toLowerCase().includes('co2') || mat.name.toLowerCase().includes('cilindro');
+                    const catConfig = CATEGORIAS_MATERIAIS.find(c => c.id === mat.category);
 
                     return (
-                      <div
+                      <MaterialCountingCard
                         key={mat.id}
-                        className="bg-white border-2 border-amber-300 rounded-2xl p-3 space-y-2 shadow-xs hover:border-amber-400 transition-colors"
-                      >
-                        <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
-                          <div>
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] font-mono font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                                [{mat.code}]
-                              </span>
-                              {!isMaterialCountedToday(mat.id, materialCounts) && (
-                                <span className="text-[9px] font-bold text-purple-800 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
-                                  Não contado inicialmente
-                                </span>
-                              )}
-                            </div>
-                            <h4 className="text-xs font-bold text-slate-900 mt-1 leading-tight">
-                              {mat.name}
-                            </h4>
-                          </div>
-                          <span className="px-2 py-0.5 bg-rose-100 text-rose-800 text-[9px] font-black uppercase rounded-full shrink-0">
-                            Recontar
-                          </span>
-                        </div>
-
-                        {/* Contadores específicos do tipo de material */}
-                        {isBarril ? (
-                          <div className="grid grid-cols-3 gap-2 pt-1 text-xs">
-                            {/* Cheio */}
-                            <div className="bg-emerald-50/60 p-2 rounded-xl border border-emerald-200 text-center">
-                              <span className="text-[10px] font-bold text-emerald-800 block mb-1">Cheio</span>
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { barrilCheio: Math.max(0, (count.barrilCheio || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <span className="font-mono font-black text-xs min-w-[20px]">{count.barrilCheio || 0}</span>
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { barrilCheio: (count.barrilCheio || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Vazio */}
-                            <div className="bg-amber-50/60 p-2 rounded-xl border border-amber-200 text-center">
-                              <span className="text-[10px] font-bold text-amber-800 block mb-1">Vazio</span>
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { barrilVazio: Math.max(0, (count.barrilVazio || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-amber-200 text-amber-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <span className="font-mono font-black text-xs min-w-[20px]">{count.barrilVazio || 0}</span>
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { barrilVazio: (count.barrilVazio || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-amber-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Em Rota */}
-                            <div className="bg-cyan-50/60 p-2 rounded-xl border border-cyan-200 text-center">
-                              <span className="text-[10px] font-bold text-cyan-800 block mb-1">Em Rota</span>
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { barrilEmRota: Math.max(0, (count.barrilEmRota || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-cyan-200 text-cyan-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <span className="font-mono font-black text-xs min-w-[20px]">{count.barrilEmRota || 0}</span>
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { barrilEmRota: (count.barrilEmRota || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-cyan-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : isCO2 ? (
-                          <div className="grid grid-cols-4 gap-1.5 pt-1 text-xs">
-                            {/* Cheio */}
-                            <div className="bg-emerald-50/60 p-1.5 rounded-xl border border-emerald-200 text-center">
-                              <span className="text-[9px] font-bold text-emerald-800 block mb-0.5">Cheio</span>
-                              <div className="flex items-center justify-center gap-1">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2Cheio: Math.max(0, (count.co2Cheio || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <span className="font-mono font-black text-[11px]">{count.co2Cheio || 0}</span>
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2Cheio: (count.co2Cheio || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Mexido */}
-                            <div className="bg-indigo-50/60 p-1.5 rounded-xl border border-indigo-200 text-center">
-                              <span className="text-[9px] font-bold text-indigo-800 block mb-0.5">Mexido</span>
-                              <div className="flex items-center justify-center gap-1">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2Mexido: Math.max(0, (count.co2Mexido || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-indigo-200 text-indigo-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <span className="font-mono font-black text-[11px]">{count.co2Mexido || 0}</span>
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2Mexido: (count.co2Mexido || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-indigo-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Vazio */}
-                            <div className="bg-amber-50/60 p-1.5 rounded-xl border border-amber-200 text-center">
-                              <span className="text-[9px] font-bold text-amber-800 block mb-0.5">Vazio</span>
-                              <div className="flex items-center justify-center gap-1">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2Vazio: Math.max(0, (count.co2Vazio || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-amber-200 text-amber-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <span className="font-mono font-black text-[11px]">{count.co2Vazio || 0}</span>
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2Vazio: (count.co2Vazio || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-amber-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Em Rota */}
-                            <div className="bg-cyan-50/60 p-1.5 rounded-xl border border-cyan-200 text-center">
-                              <span className="text-[9px] font-bold text-cyan-800 block mb-0.5">Em Rota</span>
-                              <div className="flex items-center justify-center gap-1">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2EmRota: Math.max(0, (count.co2EmRota || 0) - 1) })}
-                                  className="w-5 h-5 rounded bg-cyan-200 text-cyan-900 font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <span className="font-mono font-black text-[11px]">{count.co2EmRota || 0}</span>
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { co2EmRota: (count.co2EmRota || 0) + 1 })}
-                                  className="w-5 h-5 rounded bg-cyan-600 text-white font-bold flex items-center justify-center active:scale-90 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          /* Material Normal: Disponível e Danificado */
-                          <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
-                            {/* Disponível */}
-                            <div className="bg-emerald-50/70 p-2 rounded-xl border border-emerald-200 flex items-center justify-between">
-                              <span className="text-[11px] font-bold text-emerald-900">Disponível:</span>
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { disponivel: Math.max(0, (count.disponivel || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-emerald-200 text-emerald-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <input
-                                  type="number"
-                                  disabled={!canActiveUserRecount}
-                                  value={count.disponivel ?? 0}
-                                  onChange={e => updateRecontagemMaterialCount(mat.id, { disponivel: Math.max(0, parseInt(e.target.value) || 0) })}
-                                  className="w-12 text-center font-mono font-black bg-white border border-emerald-300 rounded py-0.5 text-xs text-emerald-950 disabled:opacity-60 disabled:cursor-not-allowed"
-                                />
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { disponivel: (count.disponivel || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-emerald-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Danificado */}
-                            <div className="bg-rose-50/70 p-2 rounded-xl border border-rose-200 flex items-center justify-between">
-                              <span className="text-[11px] font-bold text-rose-900">Danificado:</span>
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { danificado: Math.max(0, (count.danificado || 0) - 1) })}
-                                  className="w-6 h-6 rounded bg-rose-200 text-rose-900 font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  -
-                                </button>
-                                <input
-                                  type="number"
-                                  disabled={!canActiveUserRecount}
-                                  value={count.danificado ?? 0}
-                                  onChange={e => updateRecontagemMaterialCount(mat.id, { danificado: Math.max(0, parseInt(e.target.value) || 0) })}
-                                  className="w-12 text-center font-mono font-black bg-white border border-rose-300 rounded py-0.5 text-xs text-rose-950 disabled:opacity-60 disabled:cursor-not-allowed"
-                                />
-                                <button
-                                  type="button"
-                                  disabled={!canActiveUserRecount}
-                                  onClick={() => updateRecontagemMaterialCount(mat.id, { danificado: (count.danificado || 0) + 1 })}
-                                  className="w-6 h-6 rounded bg-rose-600 text-white font-bold flex items-center justify-center active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                        item={mat}
+                        catConfig={catConfig}
+                        countEntry={count}
+                        onUpdate={updateRecontagemMaterialCount}
+                        disabled={!canActiveUserRecount}
+                        lastInsertedQty={lastInsertedRecountMaterialQty[mat.id]}
+                        onRecordLastInserted={recordLastInsertedRecountMaterialQty}
+                        isRecontagem={true}
+                        wasCountedInitially={isMaterialCountedToday(mat.id, materialCounts)}
+                      />
                     );
                   })}
                 </div>
@@ -1002,8 +898,53 @@ export const RecontagemView: React.FC = () => {
                 className="w-full py-3.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Send className="w-4 h-4 stroke-[3]" />
-                <span>{isSendingRecountEmail ? 'Sincronizando e abrindo e-mail...' : 'Enviar Relatório da Recontagem por E-mail'}</span>
+                <span>{isSendingRecountEmail ? 'Gerando PDF, sincronizando e abrindo e-mail...' : 'Enviar Relatório da Recontagem por E-mail'}</span>
               </button>
+
+              {lastGeneratedPdf && (
+                <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
+                  <div className="text-[11px] font-bold text-emerald-950 truncate">
+                    PDF gerado: <span className="font-mono">{lastGeneratedPdf.pdf.fileName}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleShareGeneratedPdf}
+                      className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                      <span>Anexar / Compartilhar PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        window.location.href = lastGeneratedPdf.mailtoUrl;
+                      }}
+                      className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                      <span>Abrir E-mail (Destinatários)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => triggerFileDownload(lastGeneratedPdf.eml.blob, lastGeneratedPdf.eml.fileName)}
+                      className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                      title="Arquivo .eml com destinatários, cabeçalho e PDF comparativo já anexado"
+                    >
+                      <Mail className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Rascunho .EML (Com Anexo)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => triggerFileDownload(lastGeneratedPdf.pdf.blob, lastGeneratedPdf.pdf.fileName)}
+                      className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[11px] font-bold rounded-lg flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                    >
+                      <FileDown className="w-3.5 h-3.5" />
+                      <span>Baixar PDF</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* SEÇÃO: PRÉVIA DO RELATÓRIO DA RECONTAGEM */}

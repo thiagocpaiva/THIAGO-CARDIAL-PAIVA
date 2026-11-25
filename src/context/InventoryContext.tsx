@@ -188,6 +188,12 @@ interface InventoryContextType {
   updateRecontagemMaterialCount: (itemId: string, data: Partial<MaterialDailyEntry>) => void;
   updateRecontagemEquipmentCount: (itemId: string, data: Partial<EquipmentDailyEntry>) => void;
   recontagemSelectedCount: number;
+  lastInsertedMaterialQty: Record<string, number>;
+  recordLastInsertedMaterialQty: (itemId: string, qty: number) => void;
+  lastInsertedRecountMaterialQty: Record<string, number>;
+  recordLastInsertedRecountMaterialQty: (itemId: string, qty: number) => void;
+  lastInsertedEquipmentPatrimony: string;
+  recordLastInsertedEquipmentPatrimony: (patrimony: string) => void;
 }
 
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
@@ -714,6 +720,30 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return {};
   });
 
+  const [lastInsertedMaterialQty, setLastInsertedMaterialQty] = useState<Record<string, number>>(() => {
+    const storedDay = localStorage.getItem(getBranchStorageKey(activeBranch, 'calendar_day'));
+    if (storedDay === currentTodayKey) {
+      return loadInitialBranchData(activeBranch, 'last_inserted_material_qty', {}, []);
+    }
+    return {};
+  });
+
+  const [lastInsertedRecountMaterialQty, setLastInsertedRecountMaterialQty] = useState<Record<string, number>>(() => {
+    const storedDay = localStorage.getItem(getBranchStorageKey(activeBranch, 'calendar_day'));
+    if (storedDay === currentTodayKey) {
+      return loadInitialBranchData(activeBranch, 'last_inserted_recount_mat_qty', {}, []);
+    }
+    return {};
+  });
+
+  const [lastInsertedEquipmentPatrimony, setLastInsertedEquipmentPatrimony] = useState<string>(() => {
+    const storedDay = localStorage.getItem(getBranchStorageKey(activeBranch, 'calendar_day'));
+    if (storedDay === currentTodayKey) {
+      return loadInitialBranchData<string>(activeBranch, 'last_inserted_equip_patrimony', '', []);
+    }
+    return '';
+  });
+
   // Carrega todos os estados locais da base informada para os estados ativos em tela (sem jamais herdar estado de outra base)
   const loadBranchLocalStateIntoActive = (
     branch: UnitBranch,
@@ -773,6 +803,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.removeItem(getBranchStorageKey(branch, 'active_contador_session'));
       localStorage.setItem(getBranchStorageKey(branch, 'is_report_sent'), JSON.stringify(false));
       localStorage.setItem(getBranchStorageKey(branch, 'recontagem_unlocked'), JSON.stringify(false));
+      localStorage.removeItem(getBranchStorageKey(branch, 'last_inserted_material_qty'));
+      localStorage.removeItem(getBranchStorageKey(branch, 'last_inserted_recount_mat_qty'));
+      localStorage.removeItem(getBranchStorageKey(branch, 'last_inserted_equip_patrimony'));
       localStorage.setItem(getBranchStorageKey(branch, 'calendar_day'), todayStr);
     }
 
@@ -782,6 +815,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const recSelected = isNewDay ? {} : loadInitialBranchData<Record<string, boolean>>(branch, 'recontagem_selected_ids', {}, []);
     const recMatCounts = isNewDay ? {} : loadInitialBranchData<Record<string, MaterialDailyEntry>>(branch, 'recontagem_material_counts', {}, []);
     const recEqCounts = isNewDay ? {} : loadInitialBranchData<Record<string, EquipmentDailyEntry>>(branch, 'recontagem_equipment_counts', {}, []);
+    const lastMatQty = isNewDay ? {} : loadInitialBranchData<Record<string, number>>(branch, 'last_inserted_material_qty', {}, []);
+    const lastRecMatQty = isNewDay ? {} : loadInitialBranchData<Record<string, number>>(branch, 'last_inserted_recount_mat_qty', {}, []);
+    const lastEqPat = isNewDay ? '' : loadInitialBranchData<string>(branch, 'last_inserted_equip_patrimony', '', []);
     const cStarted = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(branch, 'count_started_by', null, []);
     const recTarget = isNewDay ? null : loadInitialBranchData<CountStartedBy | null>(branch, 'recontagem_target_contador', null, []);
     const rawRepSent = isNewDay ? false : loadInitialBranchData<boolean>(branch, 'is_report_sent', false, []);
@@ -839,6 +875,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRecontagemSelectedIds(recSelected || {});
     setRecontagemMaterialCounts(recMatCounts || {});
     setRecontagemEquipmentCounts(recEqCounts || {});
+    setLastInsertedMaterialQty(lastMatQty || {});
+    setLastInsertedRecountMaterialQty(lastRecMatQty || {});
+    setLastInsertedEquipmentPatrimony(lastEqPat || '');
 
     const statusSnapshot: BranchConcurrencyStatus = {
       countStartedBy: cStarted,
@@ -982,6 +1021,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           localStorage.removeItem(getBranchStorageKey(b, 'active_contador_session'));
           localStorage.setItem(getBranchStorageKey(b, 'is_report_sent'), JSON.stringify(false));
           localStorage.setItem(getBranchStorageKey(b, 'recontagem_unlocked'), JSON.stringify(false));
+          localStorage.removeItem(getBranchStorageKey(b, 'last_inserted_material_qty'));
+          localStorage.removeItem(getBranchStorageKey(b, 'last_inserted_recount_mat_qty'));
+          localStorage.removeItem(getBranchStorageKey(b, 'last_inserted_equip_patrimony'));
 
           localStorage.setItem(getBranchStorageKey(b, 'calendar_day'), todayStr);
 
@@ -1003,6 +1045,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             setRecontagemSelectedIds({});
             setRecontagemMaterialCounts({});
             setRecontagemEquipmentCounts({});
+            setLastInsertedMaterialQty({});
+            setLastInsertedRecountMaterialQty({});
+            setLastInsertedEquipmentPatrimony('');
             setCountStartedBy(null);
             setRecontagemTargetContador(null);
             setActiveContadorSession(null);
@@ -2281,17 +2326,23 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (scope === 'materiais' || scope === 'ambos') {
       setMaterialCounts({});
       setRecontagemMaterialCounts({});
+      setLastInsertedMaterialQty({});
+      setLastInsertedRecountMaterialQty({});
       localStorage.setItem(getBranchStorageKey(activeBranch, 'today_materials'), JSON.stringify({}));
       localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_material_counts'), JSON.stringify({}));
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'last_inserted_material_qty'));
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'last_inserted_recount_mat_qty'));
     }
 
     if (scope === 'equipamentos' || scope === 'ambos') {
       setEquipmentCounts({});
       setUncataloguedEquipments([]);
       setRecontagemEquipmentCounts({});
+      setLastInsertedEquipmentPatrimony('');
       localStorage.setItem(getBranchStorageKey(activeBranch, 'today_equipments'), JSON.stringify({}));
       localStorage.setItem(getBranchStorageKey(activeBranch, 'today_uncatalogued'), JSON.stringify([]));
       localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_equipment_counts'), JSON.stringify({}));
+      localStorage.removeItem(getBranchStorageKey(activeBranch, 'last_inserted_equip_patrimony'));
     }
 
     setRecontagemSelectedIds(nextRecSelectedIds);
@@ -2672,6 +2723,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRecontagemSelectedIds({});
     setRecontagemMaterialCounts({});
     setRecontagemEquipmentCounts({});
+    setLastInsertedRecountMaterialQty({});
     setRecontagemTargetContador(null);
     setRecontagemUnlocked(false);
     setActiveContadorSession(null);
@@ -2679,6 +2731,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_selected_ids'), JSON.stringify({}));
     localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_material_counts'), JSON.stringify({}));
     localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_equipment_counts'), JSON.stringify({}));
+    localStorage.removeItem(getBranchStorageKey(branchToCancel, 'last_inserted_recount_mat_qty'));
     localStorage.removeItem(getBranchStorageKey(branchToCancel, 'recontagem_target_contador'));
     localStorage.setItem(getBranchStorageKey(branchToCancel, 'recontagem_unlocked'), JSON.stringify(false));
     localStorage.removeItem(getBranchStorageKey(branchToCancel, 'active_contador_session'));
@@ -2897,6 +2950,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRecontagemSelectedIds(loadInitialBranchData(curBranch, 'recontagem_selected_ids', {}, []));
     setRecontagemMaterialCounts(loadInitialBranchData(curBranch, 'recontagem_material_counts', {}, []));
     setRecontagemEquipmentCounts(loadInitialBranchData(curBranch, 'recontagem_equipment_counts', {}, []));
+    setLastInsertedMaterialQty(loadInitialBranchData(curBranch, 'last_inserted_material_qty', {}, []));
+    setLastInsertedRecountMaterialQty(loadInitialBranchData(curBranch, 'last_inserted_recount_mat_qty', {}, []));
+    setLastInsertedEquipmentPatrimony(loadInitialBranchData<string>(curBranch, 'last_inserted_equip_patrimony', '', []));
     setLastCountBackup(loadInitialBranchData(curBranch, 'last_count_backup', null, []));
     setLogs(loadInitialBranchData(curBranch, 'logs', INITIAL_LOGS, []));
     const clonedEmail = loadInitialBranchData(curBranch, 'email_settings', INITIAL_EMAIL_SETTINGS, []);
@@ -3020,6 +3076,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setRecontagemSelectedIds(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'recontagem_selected_ids', {}, []));
       setRecontagemMaterialCounts(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'recontagem_material_counts', {}, []));
       setRecontagemEquipmentCounts(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'recontagem_equipment_counts', {}, []));
+      setLastInsertedMaterialQty(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'last_inserted_material_qty', {}, []));
+      setLastInsertedRecountMaterialQty(isNewDay ? {} : loadInitialBranchData(targetTestBranch, 'last_inserted_recount_mat_qty', {}, []));
+      setLastInsertedEquipmentPatrimony(isNewDay ? '' : loadInitialBranchData<string>(targetTestBranch, 'last_inserted_equip_patrimony', '', []));
       setLastCountBackup(loadInitialBranchData(targetTestBranch, 'last_count_backup', null, []));
       setLogs(loadInitialBranchData(targetTestBranch, 'logs', INITIAL_LOGS, []));
 
@@ -4019,15 +4078,19 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (effectiveStock === 'materiais' || effectiveStock === 'ambos') {
         finalMaterials = incomingMaterials;
         setMaterialCounts({});
+        setLastInsertedMaterialQty({});
         localStorage.removeItem(getBranchStorageKey(branchToUse, 'today_materials'));
+        localStorage.removeItem(getBranchStorageKey(branchToUse, 'last_inserted_material_qty'));
       }
       if (effectiveStock === 'equipamentos' || effectiveStock === 'ambos') {
         finalFreezers = incomingFreezers;
         finalEquipments = incomingEquipments;
         setEquipmentCounts({});
         setUncataloguedEquipments([]);
+        setLastInsertedEquipmentPatrimony('');
         localStorage.removeItem(getBranchStorageKey(branchToUse, 'today_equipments'));
         localStorage.removeItem(getBranchStorageKey(branchToUse, 'today_uncatalogued'));
+        localStorage.removeItem(getBranchStorageKey(branchToUse, 'last_inserted_equip_patrimony'));
       }
       const remainingMats = (effectiveStock === 'materiais' || effectiveStock === 'ambos')
         ? false
@@ -4319,10 +4382,34 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setRecontagemSelectedIds({});
     setRecontagemMaterialCounts({});
     setRecontagemEquipmentCounts({});
+    setLastInsertedRecountMaterialQty({});
     localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_selected_ids'), JSON.stringify({}));
     localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_material_counts'), JSON.stringify({}));
     localStorage.setItem(getBranchStorageKey(activeBranch, 'recontagem_equipment_counts'), JSON.stringify({}));
+    localStorage.removeItem(getBranchStorageKey(activeBranch, 'last_inserted_recount_mat_qty'));
     broadcastSync('RECONTAGEM_UPDATED');
+  };
+
+  const recordLastInsertedMaterialQty = (itemId: string, qty: number) => {
+    setLastInsertedMaterialQty(prev => {
+      const updated = { ...prev, [itemId]: qty };
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'last_inserted_material_qty'), JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const recordLastInsertedRecountMaterialQty = (itemId: string, qty: number) => {
+    setLastInsertedRecountMaterialQty(prev => {
+      const updated = { ...prev, [itemId]: qty };
+      localStorage.setItem(getBranchStorageKey(activeBranch, 'last_inserted_recount_mat_qty'), JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const recordLastInsertedEquipmentPatrimony = (patrimony: string) => {
+    const clean = patrimony.trim().toUpperCase();
+    setLastInsertedEquipmentPatrimony(clean);
+    localStorage.setItem(getBranchStorageKey(activeBranch, 'last_inserted_equip_patrimony'), JSON.stringify(clean));
   };
 
   const updateRecontagemMaterialCount = (itemId: string, data: Partial<MaterialDailyEntry>) => {
@@ -4493,6 +4580,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updateRecontagemMaterialCount,
         updateRecontagemEquipmentCount,
         recontagemSelectedCount,
+        lastInsertedMaterialQty,
+        recordLastInsertedMaterialQty,
+        lastInsertedRecountMaterialQty,
+        recordLastInsertedRecountMaterialQty,
+        lastInsertedEquipmentPatrimony,
+        recordLastInsertedEquipmentPatrimony,
       }}
     >
       {children}

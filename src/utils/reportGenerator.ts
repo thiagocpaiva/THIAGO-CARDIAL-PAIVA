@@ -116,6 +116,8 @@ export interface GenerateReportParams {
   uncataloguedEquipments: UncataloguedEquipment[];
   materialCounts: Record<string, MaterialDailyEntry>;
   equipmentCounts: Record<string, EquipmentDailyEntry>;
+  initialMaterialCounts?: Record<string, MaterialDailyEntry>;
+  initialEquipmentCounts?: Record<string, EquipmentDailyEntry>;
   includeEquipmentDefects?: boolean;
   branch?: string;
   isMobile?: boolean;
@@ -127,12 +129,16 @@ interface ConsolidadoRow {
   code: string;
   name: string;
   quantity: number;
+  initialQuantity: number;
+  difference: number;
 }
 
 interface DetailedMaterialRow {
   code: string;
   name: string;
   quantity: number;
+  initialQuantity: number;
+  difference: number;
 }
 
 interface VazioRotaMaterialRow {
@@ -140,6 +146,8 @@ interface VazioRotaMaterialRow {
   name: string;
   situation: string;
   quantity: number;
+  initialQuantity: number;
+  difference: number;
 }
 
 interface DetailedEquipRow {
@@ -151,25 +159,54 @@ interface DetailedEquipRow {
   status: 'disponivel' | 'danificado' | 'em_estoque' | 'nao_consta';
   damageDescription?: string;
   observations?: string;
+  initialQuantity: number;
+  recountQuantity: number;
+  difference: number;
+  initialStatusLabel?: string;
 }
 
 interface StructuredReportData {
   stockLabel: string;
   consolidadoMatRows: ConsolidadoRow[];
   totalGeralMateriais: number;
+  totalInitialMateriais: number;
   dispMatRows: DetailedMaterialRow[];
   subtotalMatDisp: number;
+  subtotalInitialMatDisp: number;
   danifMatRows: DetailedMaterialRow[];
   subtotalMatDanif: number;
+  subtotalInitialMatDanif: number;
   vazioRotaRows: VazioRotaMaterialRow[];
   subtotalMatVazioRota: number;
+  subtotalInitialMatVazioRota: number;
   consolidadoEquipRows: ConsolidadoRow[];
   totalEquipamentosGeral: number;
+  totalInitialEquipamentosGeral: number;
   emEstoqueEquips: DetailedEquipRow[];
+  subtotalInitialEmEstoque: number;
   naoConstaEquips: DetailedEquipRow[];
+  subtotalInitialNaoConsta: number;
   dispEquips: DetailedEquipRow[];
   danifEquips: DetailedEquipRow[];
   uncatEquips: DetailedEquipRow[];
+}
+
+function formatDiff(diff: number): string {
+  if (diff > 0) return `+${diff} un`;
+  if (diff < 0) return `${diff} un`;
+  return `0 un`;
+}
+
+function getDiffTextColorHex(diff: number): string {
+  if (diff > 0) return '#047857';
+  if (diff < 0) return '#b91c1c';
+  return '#475569';
+}
+
+function getDiffPdfColor(diff: number): [number, number, number] {
+  if (diff > 0) return [4, 120, 87];
+  if (diff < 0) return [185, 28, 28];
+  return [71, 85, 105];
 }
 
 const MATERIAL_TYPE_PRIORITY: Record<string, number> = {
@@ -248,6 +285,8 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
 
   const materialCounts = clearCountsOnly ? {} : (params.materialCounts || {});
   const equipmentCounts = clearCountsOnly ? {} : (params.equipmentCounts || {});
+  const initialMaterialCounts = clearCountsOnly ? {} : (params.initialMaterialCounts || {});
+  const initialEquipmentCounts = clearCountsOnly ? {} : (params.initialEquipmentCounts || {});
   const uncataloguedEquipments = clearCountsOnly ? [] : (params.uncataloguedEquipments || []);
 
   const stockLabel =
@@ -271,72 +310,139 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
 
   const dispMatRows: DetailedMaterialRow[] = [];
   let subtotalMatDisp = 0;
+  let subtotalInitialMatDisp = 0;
 
   sortedMaterials.forEach(m => {
     const entry = materialCounts[m.id];
+    const initEntry = initialMaterialCounts[m.id];
     if (m.category === 'barril') {
       const cheio = entry?.barrilCheio || 0;
-      if (cheio > 0) {
-        dispMatRows.push({ code: m.code, name: `${m.name} (Cheio)`, quantity: cheio });
+      const initCheio = initEntry?.barrilCheio || 0;
+      if (cheio > 0 || (isRecontagem && initCheio > 0)) {
+        dispMatRows.push({
+          code: m.code,
+          name: `${m.name} (Cheio)`,
+          quantity: cheio,
+          initialQuantity: initCheio,
+          difference: cheio - initCheio,
+        });
         subtotalMatDisp += cheio;
+        subtotalInitialMatDisp += initCheio;
       }
     } else if (m.category === 'co2') {
       const cheio = entry?.co2Cheio || 0;
+      const initCheio = initEntry?.co2Cheio || 0;
       const mexido = entry?.co2Mexido || 0;
-      if (cheio > 0) {
-        dispMatRows.push({ code: m.code, name: `${m.name} (Cheio)`, quantity: cheio });
+      const initMexido = initEntry?.co2Mexido || 0;
+      if (cheio > 0 || (isRecontagem && initCheio > 0)) {
+        dispMatRows.push({
+          code: m.code,
+          name: `${m.name} (Cheio)`,
+          quantity: cheio,
+          initialQuantity: initCheio,
+          difference: cheio - initCheio,
+        });
         subtotalMatDisp += cheio;
+        subtotalInitialMatDisp += initCheio;
       }
-      if (mexido > 0) {
-        dispMatRows.push({ code: m.code, name: `${m.name} (Mexido)`, quantity: mexido });
+      if (mexido > 0 || (isRecontagem && initMexido > 0)) {
+        dispMatRows.push({
+          code: m.code,
+          name: `${m.name} (Mexido)`,
+          quantity: mexido,
+          initialQuantity: initMexido,
+          difference: mexido - initMexido,
+        });
         subtotalMatDisp += mexido;
+        subtotalInitialMatDisp += initMexido;
       }
     } else {
       const disp = entry?.disponivel || 0;
-      if (disp > 0) {
-        dispMatRows.push({ code: m.code, name: m.name, quantity: disp });
+      const initDisp = initEntry?.disponivel || 0;
+      if (disp > 0 || (isRecontagem && initDisp > 0)) {
+        dispMatRows.push({
+          code: m.code,
+          name: m.name,
+          quantity: disp,
+          initialQuantity: initDisp,
+          difference: disp - initDisp,
+        });
         subtotalMatDisp += disp;
+        subtotalInitialMatDisp += initDisp;
       }
     }
   });
 
   const danifMatRows: DetailedMaterialRow[] = [];
   let subtotalMatDanif = 0;
+  let subtotalInitialMatDanif = 0;
 
   sortedMaterials.forEach(m => {
     if (m.category !== 'barril' && m.category !== 'co2') {
       const entry = materialCounts[m.id];
+      const initEntry = initialMaterialCounts[m.id];
       const danif = entry?.danificado || 0;
-      if (danif > 0) {
-        danifMatRows.push({ code: m.code, name: m.name, quantity: danif });
+      const initDanif = initEntry?.danificado || 0;
+      if (danif > 0 || (isRecontagem && initDanif > 0)) {
+        danifMatRows.push({
+          code: m.code,
+          name: m.name,
+          quantity: danif,
+          initialQuantity: initDanif,
+          difference: danif - initDanif,
+        });
         subtotalMatDanif += danif;
+        subtotalInitialMatDanif += initDanif;
       }
     }
   });
 
   const vazioRotaRows: VazioRotaMaterialRow[] = [];
   let subtotalMatVazioRota = 0;
+  let subtotalInitialMatVazioRota = 0;
   let totalCo2EmRota = 0;
+  let totalInitialCo2EmRota = 0;
 
   sortedMaterials.forEach(m => {
     if (m.category === 'co2') {
       const entry = materialCounts[m.id];
+      const initEntry = initialMaterialCounts[m.id];
       totalCo2EmRota += entry?.co2EmRota || 0;
+      totalInitialCo2EmRota += initEntry?.co2EmRota || 0;
     }
   });
 
   sortedMaterials.forEach(m => {
     if (m.category === 'barril') {
       const entry = materialCounts[m.id];
+      const initEntry = initialMaterialCounts[m.id];
       const vazio = entry?.barrilVazio || 0;
+      const initVazio = initEntry?.barrilVazio || 0;
       const rota = entry?.barrilEmRota || 0;
-      if (vazio > 0) {
-        vazioRotaRows.push({ code: m.code, name: m.name, situation: 'Vazio', quantity: vazio });
+      const initRota = initEntry?.barrilEmRota || 0;
+      if (vazio > 0 || (isRecontagem && initVazio > 0)) {
+        vazioRotaRows.push({
+          code: m.code,
+          name: m.name,
+          situation: 'Vazio',
+          quantity: vazio,
+          initialQuantity: initVazio,
+          difference: vazio - initVazio,
+        });
         subtotalMatVazioRota += vazio;
+        subtotalInitialMatVazioRota += initVazio;
       }
-      if (rota > 0) {
-        vazioRotaRows.push({ code: m.code, name: m.name, situation: 'Em Rota', quantity: rota });
+      if (rota > 0 || (isRecontagem && initRota > 0)) {
+        vazioRotaRows.push({
+          code: m.code,
+          name: m.name,
+          situation: 'Em Rota',
+          quantity: rota,
+          initialQuantity: initRota,
+          difference: rota - initRota,
+        });
         subtotalMatVazioRota += rota;
+        subtotalInitialMatVazioRota += initRota;
       }
     }
   });
@@ -344,33 +450,58 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
   sortedMaterials.forEach(m => {
     if (m.category === 'co2') {
       const entry = materialCounts[m.id];
+      const initEntry = initialMaterialCounts[m.id];
       const vazio = entry?.co2Vazio || 0;
-      if (vazio > 0) {
-        vazioRotaRows.push({ code: m.code, name: m.name, situation: 'Vazio', quantity: vazio });
+      const initVazio = initEntry?.co2Vazio || 0;
+      if (vazio > 0 || (isRecontagem && initVazio > 0)) {
+        vazioRotaRows.push({
+          code: m.code,
+          name: m.name,
+          situation: 'Vazio',
+          quantity: vazio,
+          initialQuantity: initVazio,
+          difference: vazio - initVazio,
+        });
         subtotalMatVazioRota += vazio;
+        subtotalInitialMatVazioRota += initVazio;
       }
     }
   });
 
-  if (totalCo2EmRota > 0) {
+  if (totalCo2EmRota > 0 || (isRecontagem && totalInitialCo2EmRota > 0)) {
     const co2Item = sortedMaterials.find(m => m.category === 'co2');
     const co2Code = co2Item?.code || '49782';
-    vazioRotaRows.push({ code: co2Code, name: 'Cilindro CO2', situation: 'Em Rota', quantity: totalCo2EmRota });
+    vazioRotaRows.push({
+      code: co2Code,
+      name: 'Cilindro CO2',
+      situation: 'Em Rota',
+      quantity: totalCo2EmRota,
+      initialQuantity: totalInitialCo2EmRota,
+      difference: totalCo2EmRota - totalInitialCo2EmRota,
+    });
     subtotalMatVazioRota += totalCo2EmRota;
+    subtotalInitialMatVazioRota += totalInitialCo2EmRota;
   }
 
   const consolidadoMatRows: ConsolidadoRow[] = [];
   let totalGeralMateriais = 0;
+  let totalInitialMateriais = 0;
   let totalCo2Consolidado = 0;
+  let totalInitialCo2Consolidado = 0;
+  let hasAnyCo2Material = false;
   let co2ItemCode = '49782';
 
   sortedMaterials.forEach(m => {
     const entry = materialCounts[m.id];
+    const initEntry = initialMaterialCounts[m.id];
     let itemTotal = 0;
+    let initTotal = 0;
 
     if (m.category === 'barril') {
       itemTotal = (entry?.barrilCheio || 0) + (entry?.barrilVazio || 0) + (entry?.barrilEmRota || 0);
+      initTotal = (initEntry?.barrilCheio || 0) + (initEntry?.barrilVazio || 0) + (initEntry?.barrilEmRota || 0);
     } else if (m.category === 'co2' || m.code.includes('49782') || m.name.toUpperCase().includes('CILINDRO CO2')) {
+      hasAnyCo2Material = true;
       itemTotal =
         (entry?.co2Cheio || 0) +
         (entry?.co2Mexido || 0) +
@@ -378,22 +509,45 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
         (entry?.co2EmRota || 0) +
         (entry?.disponivel || 0) +
         (entry?.danificado || 0);
+      initTotal =
+        (initEntry?.co2Cheio || 0) +
+        (initEntry?.co2Mexido || 0) +
+        (initEntry?.co2Vazio || 0) +
+        (initEntry?.co2EmRota || 0) +
+        (initEntry?.disponivel || 0) +
+        (initEntry?.danificado || 0);
       if (m.code && m.code !== '0') co2ItemCode = m.code;
       totalCo2Consolidado += itemTotal;
+      totalInitialCo2Consolidado += initTotal;
       totalGeralMateriais += itemTotal;
+      totalInitialMateriais += initTotal;
       return;
     } else {
       itemTotal = (entry?.disponivel || 0) + (entry?.danificado || 0);
+      initTotal = (initEntry?.disponivel || 0) + (initEntry?.danificado || 0);
     }
 
-    if (itemTotal > 0) {
-      consolidadoMatRows.push({ code: m.code, name: m.name, quantity: itemTotal });
+    if (itemTotal > 0 || isRecontagem) {
+      consolidadoMatRows.push({
+        code: m.code,
+        name: m.name,
+        quantity: itemTotal,
+        initialQuantity: initTotal,
+        difference: itemTotal - initTotal,
+      });
       totalGeralMateriais += itemTotal;
+      totalInitialMateriais += initTotal;
     }
   });
 
-  if (totalCo2Consolidado > 0) {
-    consolidadoMatRows.push({ code: co2ItemCode || '49782', name: 'CILINDRO CO2', quantity: totalCo2Consolidado });
+  if (totalCo2Consolidado > 0 || (isRecontagem && (hasAnyCo2Material || totalInitialCo2Consolidado > 0))) {
+    consolidadoMatRows.push({
+      code: co2ItemCode || '49782',
+      name: 'CILINDRO CO2',
+      quantity: totalCo2Consolidado,
+      initialQuantity: totalInitialCo2Consolidado,
+      difference: totalCo2Consolidado - totalInitialCo2Consolidado,
+    });
   }
 
   // ---------------------------------------------------
@@ -406,8 +560,16 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
           .filter(f => (isRecontagem ? !!equipmentCounts[f.id]?.status : !!equipmentCounts[f.id]))
           .map(f => {
             const count = equipmentCounts[f.id];
+            const initEntry = initialEquipmentCounts[f.id];
+            const initQty = initEntry ? 1 : 0;
+            const initialStatusLabel = !initEntry
+              ? 'Não cont.'
+              : initEntry.status === 'danificado' || Boolean(f.defect && f.defect.trim())
+                ? 'Danif.'
+                : 'Disp.';
             if (isRecontagem) {
               const status: 'em_estoque' | 'nao_consta' = count?.status === 'nao_consta' ? 'nao_consta' : 'em_estoque';
+              const recountQty = status === 'em_estoque' ? 1 : 0;
               return {
                 code: f.code,
                 patrimony: f.patrimony,
@@ -417,6 +579,10 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
                 status,
                 damageDescription: undefined,
                 observations: undefined,
+                initialQuantity: initQty,
+                recountQuantity: recountQty,
+                difference: recountQty - initQty,
+                initialStatusLabel,
               };
             }
             const hasBaseDefect = Boolean(f.defect && f.defect.trim());
@@ -435,14 +601,25 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
               status,
               damageDescription,
               observations: f.observations,
+              initialQuantity: 1,
+              recountQuantity: 1,
+              difference: 0,
             };
           }),
         ...equipments
           .filter(e => (isRecontagem ? !!equipmentCounts[e.id]?.status : !!equipmentCounts[e.id]))
           .map(e => {
             const count = equipmentCounts[e.id];
+            const initEntry = initialEquipmentCounts[e.id];
+            const initQty = initEntry ? 1 : 0;
+            const initialStatusLabel = !initEntry
+              ? 'Não cont.'
+              : initEntry.status === 'danificado' || Boolean(e.defect && e.defect.trim())
+                ? 'Danif.'
+                : 'Disp.';
             if (isRecontagem) {
               const status: 'em_estoque' | 'nao_consta' = count?.status === 'nao_consta' ? 'nao_consta' : 'em_estoque';
+              const recountQty = status === 'em_estoque' ? 1 : 0;
               return {
                 code: e.code,
                 patrimony: e.patrimony,
@@ -452,6 +629,10 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
                 status,
                 damageDescription: undefined,
                 observations: undefined,
+                initialQuantity: initQty,
+                recountQuantity: recountQty,
+                difference: recountQty - initQty,
+                initialStatusLabel,
               };
             }
             const hasBaseDefect = Boolean(e.defect && e.defect.trim());
@@ -470,6 +651,9 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
               status,
               damageDescription,
               observations: e.observations,
+              initialQuantity: 1,
+              recountQuantity: 1,
+              difference: 0,
             };
           }),
       ];
@@ -481,6 +665,7 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
     .filter(e => e.categoryKind === 'Chopeira' && e.status === 'em_estoque' && e.code && e.code !== '0')
     .sort(sortByPatrimonyAsc);
   const emEstoqueEquips = [...emEstoqueFreezers, ...emEstoqueChopeiras];
+  const subtotalInitialEmEstoque = emEstoqueEquips.reduce((sum, eq) => sum + eq.initialQuantity, 0);
 
   const naoConstaFreezers = registeredEquips
     .filter(e => e.categoryKind === 'Freezer' && e.status === 'nao_consta' && e.code && e.code !== '0')
@@ -489,6 +674,7 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
     .filter(e => e.categoryKind === 'Chopeira' && e.status === 'nao_consta' && e.code && e.code !== '0')
     .sort(sortByPatrimonyAsc);
   const naoConstaEquips = [...naoConstaFreezers, ...naoConstaChopeiras];
+  const subtotalInitialNaoConsta = naoConstaEquips.reduce((sum, eq) => sum + eq.initialQuantity, 0);
 
   const dispFreezers = registeredEquips
     .filter(e => e.categoryKind === 'Freezer' && e.status === 'disponivel' && e.code && e.code !== '0')
@@ -519,6 +705,9 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
         status: (u.status || 'disponivel') as DetailedEquipRow['status'],
         damageDescription: u.damageDescription,
         observations: u.observations,
+        initialQuantity: 1,
+        recountQuantity: 1,
+        difference: 0,
       };
     }),
   ];
@@ -533,93 +722,163 @@ function buildStructuredReportData(params: GenerateReportParams): StructuredRepo
 
   const uncatEquips = [...uncatFreezers, ...uncatChopeiras];
 
-  // Consolidado de Equipamentos: apenas código, nome básico e quantidade consolidada dos códigos contados (mesmo formato de Materiais)
+  // Consolidado de Equipamentos
   const consolidadoEquipRows: ConsolidadoRow[] = [];
+  let totalInitialEquipamentosGeral = 0;
 
-  const freezerCodeMap = new Map<string, ConsolidadoRow>();
-  registeredEquips
-    .filter(e => e.categoryKind === 'Freezer' && (isRecontagem ? e.status === 'em_estoque' : true) && e.code && e.code !== '0')
-    .forEach(e => {
-      const existing = freezerCodeMap.get(e.code);
-      if (existing) {
-        existing.quantity += 1;
-      } else {
-        freezerCodeMap.set(e.code, {
-          code: e.code,
-          name: cleanBasicName(e.name) || 'Freezer',
-          quantity: 1,
-        });
-      }
-    });
-  consolidadoEquipRows.push(...Array.from(freezerCodeMap.values()).sort(sortByCodeAsc));
+  if (isRecontagem) {
+    const freezerRecMap = new Map<string, ConsolidadoRow>();
+    freezers
+      .filter(f => f.code && f.code !== '0')
+      .forEach(f => {
+        const initQty = initialEquipmentCounts[f.id] ? 1 : 0;
+        const recQty = equipmentCounts[f.id]?.status === 'em_estoque' ? 1 : 0;
+        totalInitialEquipamentosGeral += initQty;
+        const existing = freezerRecMap.get(f.code);
+        if (existing) {
+          existing.initialQuantity += initQty;
+          existing.quantity += recQty;
+          existing.difference = existing.quantity - existing.initialQuantity;
+        } else {
+          freezerRecMap.set(f.code, {
+            code: f.code,
+            name: cleanBasicName(f.name) || 'Freezer',
+            quantity: recQty,
+            initialQuantity: initQty,
+            difference: recQty - initQty,
+          });
+        }
+      });
+    consolidadoEquipRows.push(...Array.from(freezerRecMap.values()).sort(sortByCodeAsc));
 
-  if (!isRecontagem && uncatFreezers.length > 0) {
-    const uncatFreezerMap = new Map<string, ConsolidadoRow>();
-    uncatFreezers.forEach(u => {
-      const code = u.code && u.code !== '0' ? u.code : 'NÃO-CAD';
-      const name = cleanBasicName(u.name) || 'Freezer Não Cadastrado';
-      const key = `${code}::${name}`;
-      const existing = uncatFreezerMap.get(key);
-      if (existing) {
-        existing.quantity += 1;
-      } else {
-        uncatFreezerMap.set(key, { code, name, quantity: 1 });
-      }
-    });
-    consolidadoEquipRows.push(...Array.from(uncatFreezerMap.values()));
-  }
+    const chopeiraRecMap = new Map<string, ConsolidadoRow>();
+    equipments
+      .filter(e => e.code && e.code !== '0')
+      .forEach(e => {
+        const initQty = initialEquipmentCounts[e.id] ? 1 : 0;
+        const recQty = equipmentCounts[e.id]?.status === 'em_estoque' ? 1 : 0;
+        totalInitialEquipamentosGeral += initQty;
+        const existing = chopeiraRecMap.get(e.code);
+        if (existing) {
+          existing.initialQuantity += initQty;
+          existing.quantity += recQty;
+          existing.difference = existing.quantity - existing.initialQuantity;
+        } else {
+          chopeiraRecMap.set(e.code, {
+            code: e.code,
+            name: cleanBasicName(e.name) || 'Chopeira',
+            quantity: recQty,
+            initialQuantity: initQty,
+            difference: recQty - initQty,
+          });
+        }
+      });
+    consolidadoEquipRows.push(...Array.from(chopeiraRecMap.values()).sort(sortByCodeAsc));
+  } else {
+    const freezerCodeMap = new Map<string, ConsolidadoRow>();
+    registeredEquips
+      .filter(e => e.categoryKind === 'Freezer' && e.code && e.code !== '0')
+      .forEach(e => {
+        const existing = freezerCodeMap.get(e.code);
+        if (existing) {
+          existing.quantity += 1;
+          existing.initialQuantity += 1;
+        } else {
+          freezerCodeMap.set(e.code, {
+            code: e.code,
+            name: cleanBasicName(e.name) || 'Freezer',
+            quantity: 1,
+            initialQuantity: 1,
+            difference: 0,
+          });
+        }
+      });
+    consolidadoEquipRows.push(...Array.from(freezerCodeMap.values()).sort(sortByCodeAsc));
 
-  const chopeiraCodeMap = new Map<string, ConsolidadoRow>();
-  registeredEquips
-    .filter(e => e.categoryKind === 'Chopeira' && (isRecontagem ? e.status === 'em_estoque' : true) && e.code && e.code !== '0')
-    .forEach(e => {
-      const existing = chopeiraCodeMap.get(e.code);
-      if (existing) {
-        existing.quantity += 1;
-      } else {
-        chopeiraCodeMap.set(e.code, {
-          code: e.code,
-          name: cleanBasicName(e.name) || 'Chopeira',
-          quantity: 1,
-        });
-      }
-    });
-  consolidadoEquipRows.push(...Array.from(chopeiraCodeMap.values()).sort(sortByCodeAsc));
+    if (uncatFreezers.length > 0) {
+      const uncatFreezerMap = new Map<string, ConsolidadoRow>();
+      uncatFreezers.forEach(u => {
+        const code = u.code && u.code !== '0' ? u.code : 'NÃO-CAD';
+        const name = cleanBasicName(u.name) || 'Freezer Não Cadastrado';
+        const key = `${code}::${name}`;
+        const existing = uncatFreezerMap.get(key);
+        if (existing) {
+          existing.quantity += 1;
+          existing.initialQuantity += 1;
+        } else {
+          uncatFreezerMap.set(key, { code, name, quantity: 1, initialQuantity: 1, difference: 0 });
+        }
+      });
+      consolidadoEquipRows.push(...Array.from(uncatFreezerMap.values()));
+    }
 
-  if (!isRecontagem && uncatChopeiras.length > 0) {
-    const uncatChopeiraMap = new Map<string, ConsolidadoRow>();
-    uncatChopeiras.forEach(u => {
-      const code = u.code && u.code !== '0' ? u.code : 'NÃO-CAD';
-      const name = cleanBasicName(u.name) || 'Chopeira Não Cadastrada';
-      const key = `${code}::${name}`;
-      const existing = uncatChopeiraMap.get(key);
-      if (existing) {
-        existing.quantity += 1;
-      } else {
-        uncatChopeiraMap.set(key, { code, name, quantity: 1 });
-      }
-    });
-    consolidadoEquipRows.push(...Array.from(uncatChopeiraMap.values()));
+    const chopeiraCodeMap = new Map<string, ConsolidadoRow>();
+    registeredEquips
+      .filter(e => e.categoryKind === 'Chopeira' && e.code && e.code !== '0')
+      .forEach(e => {
+        const existing = chopeiraCodeMap.get(e.code);
+        if (existing) {
+          existing.quantity += 1;
+          existing.initialQuantity += 1;
+        } else {
+          chopeiraCodeMap.set(e.code, {
+            code: e.code,
+            name: cleanBasicName(e.name) || 'Chopeira',
+            quantity: 1,
+            initialQuantity: 1,
+            difference: 0,
+          });
+        }
+      });
+    consolidadoEquipRows.push(...Array.from(chopeiraCodeMap.values()).sort(sortByCodeAsc));
+
+    if (uncatChopeiras.length > 0) {
+      const uncatChopeiraMap = new Map<string, ConsolidadoRow>();
+      uncatChopeiras.forEach(u => {
+        const code = u.code && u.code !== '0' ? u.code : 'NÃO-CAD';
+        const name = cleanBasicName(u.name) || 'Chopeira Não Cadastrada';
+        const key = `${code}::${name}`;
+        const existing = uncatChopeiraMap.get(key);
+        if (existing) {
+          existing.quantity += 1;
+          existing.initialQuantity += 1;
+        } else {
+          uncatChopeiraMap.set(key, { code, name, quantity: 1, initialQuantity: 1, difference: 0 });
+        }
+      });
+      consolidadoEquipRows.push(...Array.from(uncatChopeiraMap.values()));
+    }
   }
 
   const totalEquipamentosGeral = isRecontagem
     ? emEstoqueEquips.length
     : registeredEquips.length + uncataloguedEquipments.length;
 
+  if (!isRecontagem) {
+    totalInitialEquipamentosGeral = totalEquipamentosGeral;
+  }
+
   return {
     stockLabel,
     consolidadoMatRows,
     totalGeralMateriais,
+    totalInitialMateriais,
     dispMatRows,
     subtotalMatDisp,
+    subtotalInitialMatDisp,
     danifMatRows,
     subtotalMatDanif,
+    subtotalInitialMatDanif,
     vazioRotaRows,
     subtotalMatVazioRota,
+    subtotalInitialMatVazioRota,
     consolidadoEquipRows,
     totalEquipamentosGeral,
+    totalInitialEquipamentosGeral,
     emEstoqueEquips,
+    subtotalInitialEmEstoque,
     naoConstaEquips,
+    subtotalInitialNaoConsta,
     dispEquips,
     danifEquips,
     uncatEquips,
@@ -682,9 +941,17 @@ export function generateStockReportText(params: GenerateReportParams): string {
     lines.push(`ESTOQUE CONSOLIDADO - MATERIAIS:`);
     if (data.consolidadoMatRows.length > 0) {
       data.consolidadoMatRows.forEach(r => {
-        lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        if (isRecontagem) {
+          lines.push(`   • [${r.code}] ${r.name}: 1ª: ${r.initialQuantity} un | Rec: ${r.quantity} un | Dif: ${formatDiff(r.difference)}`);
+        } else {
+          lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        }
       });
-      lines.push(`   >> TOTAL GERAL DE MATERIAIS: ${data.totalGeralMateriais} un`);
+      if (isRecontagem) {
+        lines.push(`   >> TOTAL GERAL DE MATERIAIS: 1ª: ${data.totalInitialMateriais} un | Rec: ${data.totalGeralMateriais} un | Dif: ${formatDiff(data.totalGeralMateriais - data.totalInitialMateriais)}`);
+      } else {
+        lines.push(`   >> TOTAL GERAL DE MATERIAIS: ${data.totalGeralMateriais} un`);
+      }
     } else {
       lines.push(`   • Nenhum material contado até o momento.`);
     }
@@ -695,9 +962,17 @@ export function generateStockReportText(params: GenerateReportParams): string {
     lines.push(`ESTOQUE CONSOLIDADO - EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}:`);
     if (data.consolidadoEquipRows.length > 0) {
       data.consolidadoEquipRows.forEach(r => {
-        lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        if (isRecontagem) {
+          lines.push(`   • [${r.code}] ${r.name}: 1ª: ${r.initialQuantity} un | Rec: ${r.quantity} un | Dif: ${formatDiff(r.difference)}`);
+        } else {
+          lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        }
       });
-      lines.push(`   >> TOTAL GERAL DE EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}: ${data.totalEquipamentosGeral} un`);
+      if (isRecontagem) {
+        lines.push(`   >> TOTAL GERAL DE EQUIPAMENTOS EM ESTOQUE: 1ª: ${data.totalInitialEquipamentosGeral} un | Rec: ${data.totalEquipamentosGeral} un | Dif: ${formatDiff(data.totalEquipamentosGeral - data.totalInitialEquipamentosGeral)}`);
+      } else {
+        lines.push(`   >> TOTAL GERAL DE EQUIPAMENTOS: ${data.totalEquipamentosGeral} un`);
+      }
     } else {
       lines.push(`   • Nenhum equipamento contado até o momento.`);
     }
@@ -715,9 +990,17 @@ export function generateStockReportText(params: GenerateReportParams): string {
     lines.push(`1 ITENS DISPONÍVEIS:`);
     if (data.dispMatRows.length > 0) {
       data.dispMatRows.forEach(r => {
-        lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        if (isRecontagem) {
+          lines.push(`   • [${r.code}] ${r.name}: 1ª: ${r.initialQuantity} un | Rec: ${r.quantity} un | Dif: ${formatDiff(r.difference)}`);
+        } else {
+          lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        }
       });
-      lines.push(`   >> Subtotal Disponíveis: ${data.subtotalMatDisp} un`);
+      if (isRecontagem) {
+        lines.push(`   >> Subtotal Disponíveis: 1ª: ${data.subtotalInitialMatDisp} un | Rec: ${data.subtotalMatDisp} un | Dif: ${formatDiff(data.subtotalMatDisp - data.subtotalInitialMatDisp)}`);
+      } else {
+        lines.push(`   >> Subtotal Disponíveis: ${data.subtotalMatDisp} un`);
+      }
     }
     lines.push(``);
     lines.push(DIVIDER_SINGLE);
@@ -725,9 +1008,17 @@ export function generateStockReportText(params: GenerateReportParams): string {
     lines.push(`2 ITENS DANIFICADOS:`);
     if (data.danifMatRows.length > 0) {
       data.danifMatRows.forEach(r => {
-        lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        if (isRecontagem) {
+          lines.push(`   • [${r.code}] ${r.name}: 1ª: ${r.initialQuantity} un | Rec: ${r.quantity} un | Dif: ${formatDiff(r.difference)}`);
+        } else {
+          lines.push(`   • [${r.code}] ${r.name}: ${r.quantity} un`);
+        }
       });
-      lines.push(`   >> Subtotal Danificados: ${data.subtotalMatDanif} un`);
+      if (isRecontagem) {
+        lines.push(`   >> Subtotal Danificados: 1ª: ${data.subtotalInitialMatDanif} un | Rec: ${data.subtotalMatDanif} un | Dif: ${formatDiff(data.subtotalMatDanif - data.subtotalInitialMatDanif)}`);
+      } else {
+        lines.push(`   >> Subtotal Danificados: ${data.subtotalMatDanif} un`);
+      }
     }
     lines.push(``);
     lines.push(DIVIDER_SINGLE);
@@ -735,9 +1026,17 @@ export function generateStockReportText(params: GenerateReportParams): string {
     lines.push(`3 ITENS VAZIO E EM ROTA:`);
     if (data.vazioRotaRows.length > 0) {
       data.vazioRotaRows.forEach(r => {
-        lines.push(`   • [${r.code}] ${r.name} (${r.situation}): ${r.quantity} un`);
+        if (isRecontagem) {
+          lines.push(`   • [${r.code}] ${r.name} (${r.situation}): 1ª: ${r.initialQuantity} un | Rec: ${r.quantity} un | Dif: ${formatDiff(r.difference)}`);
+        } else {
+          lines.push(`   • [${r.code}] ${r.name} (${r.situation}): ${r.quantity} un`);
+        }
       });
-      lines.push(`   >> Subtotal Vazio e Em Rota: ${data.subtotalMatVazioRota} un`);
+      if (isRecontagem) {
+        lines.push(`   >> Subtotal Vazio e Em Rota: 1ª: ${data.subtotalInitialMatVazioRota} un | Rec: ${data.subtotalMatVazioRota} un | Dif: ${formatDiff(data.subtotalMatVazioRota - data.subtotalInitialMatVazioRota)}`);
+      } else {
+        lines.push(`   >> Subtotal Vazio e Em Rota: ${data.subtotalMatVazioRota} un`);
+      }
     }
     lines.push(``);
   }
@@ -755,9 +1054,9 @@ export function generateStockReportText(params: GenerateReportParams): string {
       if (data.emEstoqueEquips.length > 0) {
         data.emEstoqueEquips.forEach(eq => {
           const codePrefix = eq.code && eq.code.trim() ? `[${eq.code}] ` : '';
-          lines.push(`   • ${codePrefix}Patrimônio: ${eq.patrimony} - ${eq.fullNameWithSpecs}`);
+          lines.push(`   • ${codePrefix}Patrimônio: ${eq.patrimony} - ${eq.fullNameWithSpecs} | 1ª: ${eq.initialQuantity} un (${eq.initialStatusLabel}) | Rec: ${eq.recountQuantity} un | Dif: ${formatDiff(eq.difference)}`);
         });
-        lines.push(`   >> Subtotal Em Estoque: ${data.emEstoqueEquips.length} un`);
+        lines.push(`   >> Subtotal Em Estoque: 1ª: ${data.subtotalInitialEmEstoque} un | Rec: ${data.emEstoqueEquips.length} un | Dif: ${formatDiff(data.emEstoqueEquips.length - data.subtotalInitialEmEstoque)}`);
       } else {
         lines.push(`   • Nenhum equipamento confirmado em estoque`);
       }
@@ -768,9 +1067,9 @@ export function generateStockReportText(params: GenerateReportParams): string {
       if (data.naoConstaEquips.length > 0) {
         data.naoConstaEquips.forEach(eq => {
           const codePrefix = eq.code && eq.code.trim() ? `[${eq.code}] ` : '';
-          lines.push(`   • ${codePrefix}Patrimônio: ${eq.patrimony} - ${eq.fullNameWithSpecs}`);
+          lines.push(`   • ${codePrefix}Patrimônio: ${eq.patrimony} - ${eq.fullNameWithSpecs} | 1ª: ${eq.initialQuantity} un (${eq.initialStatusLabel}) | Rec: ${eq.recountQuantity} un | Dif: ${formatDiff(eq.difference)}`);
         });
-        lines.push(`   >> Subtotal Não Constam em Estoque: ${data.naoConstaEquips.length} un`);
+        lines.push(`   >> Subtotal Não Constam em Estoque: 1ª: ${data.subtotalInitialNaoConsta} un | Rec: ${data.naoConstaEquips.length} un | Dif: ${formatDiff(data.naoConstaEquips.length - data.subtotalInitialNaoConsta)}`);
       } else {
         lines.push(`   • Nenhum equipamento apontado como não consta em estoque`);
       }
@@ -977,17 +1276,40 @@ export function generateStockReportEmailTableText(params: GenerateReportParams):
   if (selectedStock === 'materiais' || selectedStock === 'ambos') {
     if (data.consolidadoMatRows.length > 0) {
       lines.push('ESTOQUE CONSOLIDADO: MATERIAIS');
-      lines.push(
-        ...renderAsciiTable(
-          [
-            { header: 'Código', width: wCode, align: 'left' },
-            { header: 'Descrição do Item', width: wDesc3, align: 'left' },
-            { header: 'Quantidade', width: wQty, align: 'right' },
-          ],
-          data.consolidadoMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-          ['TOTAL', 'TOTAL GERAL DE MATERIAIS:', `${data.totalGeralMateriais} un`]
-        )
-      );
+      if (isRecontagem) {
+        const matDiffTotal = data.totalGeralMateriais - data.totalInitialMateriais;
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Item', width: isMobile ? 20 : 30, align: 'left' },
+              { header: '1ª Cont.', width: 8, align: 'right' },
+              { header: 'Recont.', width: 8, align: 'right' },
+              { header: 'Diferença', width: 9, align: 'right' },
+            ],
+            data.consolidadoMatRows.map(r => [
+              `[${r.code}]`,
+              r.name,
+              `${r.initialQuantity} un`,
+              `${r.quantity} un`,
+              formatDiff(r.difference),
+            ]),
+            ['TOTAL', 'TOTAL GERAL:', `${data.totalInitialMateriais} un`, `${data.totalGeralMateriais} un`, formatDiff(matDiffTotal)]
+          )
+        );
+      } else {
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Item', width: wDesc3, align: 'left' },
+              { header: 'Quantidade', width: wQty, align: 'right' },
+            ],
+            data.consolidadoMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
+            ['TOTAL', 'TOTAL GERAL DE MATERIAIS:', `${data.totalGeralMateriais} un`]
+          )
+        );
+      }
     } else {
       lines.push('ESTOQUE CONSOLIDADO (MATERIAIS): Nenhum material contado até o momento.');
     }
@@ -995,19 +1317,42 @@ export function generateStockReportEmailTableText(params: GenerateReportParams):
   }
 
   if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
-    if (data.totalEquipamentosGeral > 0) {
+    if (isRecontagem ? data.consolidadoEquipRows.length > 0 : data.totalEquipamentosGeral > 0) {
       lines.push(`ESTOQUE CONSOLIDADO: EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}`);
-      lines.push(
-        ...renderAsciiTable(
-          [
-            { header: 'Código', width: wCode, align: 'left' },
-            { header: 'Descrição do Equipamento', width: wDesc3, align: 'left' },
-            { header: 'Quantidade', width: wQty, align: 'right' },
-          ],
-          data.consolidadoEquipRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-          ['TOTAL', `TOTAL GERAL DE EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}:`, `${data.totalEquipamentosGeral} un`]
-        )
-      );
+      if (isRecontagem) {
+        const eqDiffTotal = data.totalEquipamentosGeral - data.totalInitialEquipamentosGeral;
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Equipamento', width: isMobile ? 20 : 30, align: 'left' },
+              { header: '1ª Cont.', width: 8, align: 'right' },
+              { header: 'Recont.', width: 8, align: 'right' },
+              { header: 'Diferença', width: 9, align: 'right' },
+            ],
+            data.consolidadoEquipRows.map(r => [
+              `[${r.code}]`,
+              r.name,
+              `${r.initialQuantity} un`,
+              `${r.quantity} un`,
+              formatDiff(r.difference),
+            ]),
+            ['TOTAL', 'TOTAL GERAL:', `${data.totalInitialEquipamentosGeral} un`, `${data.totalEquipamentosGeral} un`, formatDiff(eqDiffTotal)]
+          )
+        );
+      } else {
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Equipamento', width: wDesc3, align: 'left' },
+              { header: 'Quantidade', width: wQty, align: 'right' },
+            ],
+            data.consolidadoEquipRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
+            ['TOTAL', 'TOTAL GERAL DE EQUIPAMENTOS:', `${data.totalEquipamentosGeral} un`]
+          )
+        );
+      }
     } else {
       lines.push('ESTOQUE CONSOLIDADO (EQUIPAMENTOS): Nenhum equipamento contado até o momento.');
     }
@@ -1022,50 +1367,121 @@ export function generateStockReportEmailTableText(params: GenerateReportParams):
 
     if (data.dispMatRows.length > 0) {
       lines.push('1 ITENS DISPONÍVEIS');
-      lines.push(
-        ...renderAsciiTable(
-          [
-            { header: 'Código', width: wCode, align: 'left' },
-            { header: 'Descrição do Material', width: wDesc3, align: 'left' },
-            { header: 'Quantidade', width: wQty, align: 'right' },
-          ],
-          data.dispMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-          ['SUBTOTAL', 'Subtotal Disponíveis:', `${data.subtotalMatDisp} un`]
-        )
-      );
+      if (isRecontagem) {
+        const diffDisp = data.subtotalMatDisp - data.subtotalInitialMatDisp;
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Material', width: isMobile ? 20 : 30, align: 'left' },
+              { header: '1ª Cont.', width: 8, align: 'right' },
+              { header: 'Recont.', width: 8, align: 'right' },
+              { header: 'Diferença', width: 9, align: 'right' },
+            ],
+            data.dispMatRows.map(r => [
+              `[${r.code}]`,
+              r.name,
+              `${r.initialQuantity} un`,
+              `${r.quantity} un`,
+              formatDiff(r.difference),
+            ]),
+            ['SUBTOTAL', 'Subtotal Disponíveis:', `${data.subtotalInitialMatDisp} un`, `${data.subtotalMatDisp} un`, formatDiff(diffDisp)]
+          )
+        );
+      } else {
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Material', width: wDesc3, align: 'left' },
+              { header: 'Quantidade', width: wQty, align: 'right' },
+            ],
+            data.dispMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
+            ['SUBTOTAL', 'Subtotal Disponíveis:', `${data.subtotalMatDisp} un`]
+          )
+        );
+      }
       lines.push('');
     }
 
     if (data.danifMatRows.length > 0) {
       lines.push('2 ITENS DANIFICADOS');
-      lines.push(
-        ...renderAsciiTable(
-          [
-            { header: 'Código', width: wCode, align: 'left' },
-            { header: 'Descrição do Material', width: wDesc3, align: 'left' },
-            { header: 'Quantidade', width: wQty, align: 'right' },
-          ],
-          data.danifMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
-          ['SUBTOTAL', 'Subtotal Danificados:', `${data.subtotalMatDanif} un`]
-        )
-      );
+      if (isRecontagem) {
+        const diffDanif = data.subtotalMatDanif - data.subtotalInitialMatDanif;
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Material', width: isMobile ? 20 : 30, align: 'left' },
+              { header: '1ª Cont.', width: 8, align: 'right' },
+              { header: 'Recont.', width: 8, align: 'right' },
+              { header: 'Diferença', width: 9, align: 'right' },
+            ],
+            data.danifMatRows.map(r => [
+              `[${r.code}]`,
+              r.name,
+              `${r.initialQuantity} un`,
+              `${r.quantity} un`,
+              formatDiff(r.difference),
+            ]),
+            ['SUBTOTAL', 'Subtotal Danificados:', `${data.subtotalInitialMatDanif} un`, `${data.subtotalMatDanif} un`, formatDiff(diffDanif)]
+          )
+        );
+      } else {
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Material', width: wDesc3, align: 'left' },
+              { header: 'Quantidade', width: wQty, align: 'right' },
+            ],
+            data.danifMatRows.map(r => [`[${r.code}]`, r.name, `${r.quantity} un`]),
+            ['SUBTOTAL', 'Subtotal Danificados:', `${data.subtotalMatDanif} un`]
+          )
+        );
+      }
       lines.push('');
     }
 
     if (data.vazioRotaRows.length > 0) {
       lines.push('3 ITENS VAZIO E EM ROTA');
-      lines.push(
-        ...renderAsciiTable(
-          [
-            { header: 'Código', width: wCode, align: 'left' },
-            { header: 'Descrição do Material', width: isMobile ? 19 : 30, align: 'left' },
-            { header: 'Situação', width: isMobile ? 9 : 11, align: 'left' },
-            { header: 'Quantidade', width: wQty, align: 'right' },
-          ],
-          data.vazioRotaRows.map(r => [`[${r.code}]`, r.name, r.situation, `${r.quantity} un`]),
-          ['SUBTOTAL', 'Subtotal Vazio e Em Rota:', '', `${data.subtotalMatVazioRota} un`]
-        )
-      );
+      if (isRecontagem) {
+        const diffVr = data.subtotalMatVazioRota - data.subtotalInitialMatVazioRota;
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Material', width: isMobile ? 16 : 24, align: 'left' },
+              { header: 'Situação', width: 8, align: 'left' },
+              { header: '1ª Cont.', width: 8, align: 'right' },
+              { header: 'Recont.', width: 8, align: 'right' },
+              { header: 'Diferença', width: 9, align: 'right' },
+            ],
+            data.vazioRotaRows.map(r => [
+              `[${r.code}]`,
+              r.name,
+              r.situation,
+              `${r.initialQuantity} un`,
+              `${r.quantity} un`,
+              formatDiff(r.difference),
+            ]),
+            ['SUBTOTAL', 'Subtotal Vazio e Em Rota:', '', `${data.subtotalInitialMatVazioRota} un`, `${data.subtotalMatVazioRota} un`, formatDiff(diffVr)]
+          )
+        );
+      } else {
+        lines.push(
+          ...renderAsciiTable(
+            [
+              { header: 'Código', width: wCode, align: 'left' },
+              { header: 'Descrição do Material', width: isMobile ? 19 : 30, align: 'left' },
+              { header: 'Situação', width: isMobile ? 9 : 11, align: 'left' },
+              { header: 'Quantidade', width: wQty, align: 'right' },
+            ],
+            data.vazioRotaRows.map(r => [`[${r.code}]`, r.name, r.situation, `${r.quantity} un`]),
+            ['SUBTOTAL', 'Subtotal Vazio e Em Rota:', '', `${data.subtotalMatVazioRota} un`]
+          )
+        );
+      }
       lines.push('');
     }
   }
@@ -1078,32 +1494,54 @@ export function generateStockReportEmailTableText(params: GenerateReportParams):
       lines.push('ESTOQUE DE EQUIPAMENTOS (RECONTAGEM - DETALHADO)');
 
       if (data.emEstoqueEquips.length > 0) {
+        const diffEmEst = data.emEstoqueEquips.length - data.subtotalInitialEmEstoque;
         lines.push('1 EQUIPAMENTOS EM ESTOQUE');
         lines.push(
           ...renderAsciiTable(
             [
               { header: 'Código', width: wCode, align: 'left' },
               { header: 'Patrimônio', width: isMobile ? 10 : 12, align: 'left' },
-              { header: 'Descrição / Especificações', width: isMobile ? 26 : 41, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 18 : 28, align: 'left' },
+              { header: '1ª Cont.', width: 8, align: 'right' },
+              { header: 'Recont.', width: 8, align: 'right' },
+              { header: 'Diferença', width: 9, align: 'right' },
             ],
-            data.emEstoqueEquips.map(eq => [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs]),
-            ['SUBTOTAL', 'Subtotal Em Estoque:', `${data.emEstoqueEquips.length} un`]
+            data.emEstoqueEquips.map(eq => [
+              eq.code ? `[${eq.code}]` : '-',
+              eq.patrimony,
+              eq.fullNameWithSpecs,
+              `${eq.initialQuantity} un`,
+              `${eq.recountQuantity} un`,
+              formatDiff(eq.difference),
+            ]),
+            ['SUBTOTAL', 'Subtotal Em Estoque:', '', `${data.subtotalInitialEmEstoque} un`, `${data.emEstoqueEquips.length} un`, formatDiff(diffEmEst)]
           )
         );
         lines.push('');
       }
 
       if (data.naoConstaEquips.length > 0) {
+        const diffNaoConsta = 0 - data.subtotalInitialNaoConsta;
         lines.push('2 EQUIPAMENTOS NÃO CONSTAM EM ESTOQUE');
         lines.push(
           ...renderAsciiTable(
             [
               { header: 'Código', width: wCode, align: 'left' },
               { header: 'Patrimônio', width: isMobile ? 10 : 12, align: 'left' },
-              { header: 'Descrição / Especificações', width: isMobile ? 26 : 41, align: 'left' },
+              { header: 'Descrição / Especificações', width: isMobile ? 18 : 28, align: 'left' },
+              { header: '1ª Cont.', width: 8, align: 'right' },
+              { header: 'Recont.', width: 8, align: 'right' },
+              { header: 'Diferença', width: 9, align: 'right' },
             ],
-            data.naoConstaEquips.map(eq => [eq.code ? `[${eq.code}]` : '-', eq.patrimony, eq.fullNameWithSpecs]),
-            ['SUBTOTAL', 'Subtotal Não Constam em Estoque:', `${data.naoConstaEquips.length} un`]
+            data.naoConstaEquips.map(eq => [
+              eq.code ? `[${eq.code}]` : '-',
+              eq.patrimony,
+              eq.fullNameWithSpecs,
+              `${eq.initialQuantity} un`,
+              `${eq.recountQuantity} un`,
+              formatDiff(eq.difference),
+            ]),
+            ['SUBTOTAL', 'Subtotal Não Constam:', '', `${data.subtotalInitialNaoConsta} un`, `0 un`, formatDiff(diffNaoConsta)]
           )
         );
         lines.push('');
@@ -1253,8 +1691,53 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
   `;
 
   if (selectedStock === 'materiais' || selectedStock === 'ambos') {
-    tablesHtml += data.consolidadoMatRows.length > 0
-      ? `
+    if (data.consolidadoMatRows.length > 0) {
+      const matDiffTotal = data.totalGeralMateriais - data.totalInitialMateriais;
+      tablesHtml += isRecontagem
+        ? `
+        <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 10px; border: 2.5px solid #059669; font-family: Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+          <thead>
+            <tr style="background-color: #065f46; color: #ffffff;">
+              <th colspan="5" style="padding: 10px 14px; text-align: left; font-size: 14px; font-weight: 900; text-transform: uppercase; border: 1px solid #065f46;">
+                ESTOQUE CONSOLIDADO: MATERIAIS (COMPARATIVO)
+              </th>
+            </tr>
+            <tr style="background-color: #d1fae5; color: #064e3b; font-size: 12px; font-weight: 800; text-transform: uppercase;">
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: left; width: 15%;">Código</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: left;">Descrição do Item</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: right; width: 15%;">1ª Contagem</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: right; width: 15%;">Recontagem</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: right; width: 15%;">Diferença</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.consolidadoMatRows.map(r => `
+              <tr style="background-color: #ffffff;">
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13px; font-weight: 800; color: #065f46; font-family: monospace;">[${escapeHtml(r.code)}]</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13px; font-weight: 800; color: #0f172a;">${escapeHtml(r.name)}</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13px; font-weight: 700; color: #334155; text-align: right;">${r.initialQuantity} un</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13.5px; font-weight: 900; color: #047857; text-align: right;">${r.quantity} un</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13.5px; font-weight: 900; color: ${getDiffTextColorHex(r.difference)}; text-align: right;">${formatDiff(r.difference)}</td>
+              </tr>
+            `).join('')}
+            <tr style="background-color: #059669; color: #ffffff;">
+              <td colspan="2" style="padding: 11px 12px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right; text-transform: uppercase;">
+                TOTAL GERAL DE MATERIAIS:
+              </td>
+              <td style="padding: 11px 10px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right;">
+                ${data.totalInitialMateriais} un
+              </td>
+              <td style="padding: 11px 10px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right;">
+                ${data.totalGeralMateriais} un
+              </td>
+              <td style="padding: 11px 10px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right;">
+                ${formatDiff(matDiffTotal)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      `
+        : `
         <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 10px; border: 2.5px solid #059669; font-family: Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
           <thead>
             <tr style="background-color: #065f46; color: #ffffff;">
@@ -1286,22 +1769,69 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
             </tr>
           </tbody>
         </table>
-      `
-      : `
+      `;
+    } else {
+      tablesHtml += `
         <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 10px; border: 1.5px solid #a7f3d0; font-family: Arial, sans-serif;">
           <tr><td style="padding: 10px 12px; font-size: 12.5px; color: #475569; font-weight: 600;">ESTOQUE CONSOLIDADO (MATERIAIS): Nenhum material contado até o momento.</td></tr>
         </table>
       `;
+    }
   }
 
   if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
-    tablesHtml += data.totalEquipamentosGeral > 0
-      ? `
+    if (isRecontagem ? data.consolidadoEquipRows.length > 0 : data.totalEquipamentosGeral > 0) {
+      const eqDiffTotal = data.totalEquipamentosGeral - data.totalInitialEquipamentosGeral;
+      tablesHtml += isRecontagem
+        ? `
+        <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 14px; border: 2.5px solid #059669; font-family: Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+          <thead>
+            <tr style="background-color: #065f46; color: #ffffff;">
+              <th colspan="5" style="padding: 10px 14px; text-align: left; font-size: 14px; font-weight: 900; text-transform: uppercase; border: 1px solid #065f46;">
+                ESTOQUE CONSOLIDADO: EQUIPAMENTOS EM ESTOQUE (COMPARATIVO)
+              </th>
+            </tr>
+            <tr style="background-color: #d1fae5; color: #064e3b; font-size: 12px; font-weight: 800; text-transform: uppercase;">
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: left; width: 15%;">Código</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: left;">Descrição do Equipamento</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: right; width: 15%;">1ª Contagem</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: right; width: 15%;">Recontagem</th>
+              <th style="padding: 9px 10px; border: 1.5px solid #a7f3d0; text-align: right; width: 15%;">Diferença</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.consolidadoEquipRows.map(g => `
+              <tr style="background-color: #ffffff;">
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13px; font-weight: 800; color: #065f46; font-family: monospace;">[${escapeHtml(g.code)}]</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13px; font-weight: 800; color: #0f172a;">${escapeHtml(g.name)}</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13px; font-weight: 700; color: #334155; text-align: right;">${g.initialQuantity} un</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13.5px; font-weight: 900; color: #047857; text-align: right;">${g.quantity} un</td>
+                <td style="padding: 9px 10px; border: 1.5px solid #a7f3d0; font-size: 13.5px; font-weight: 900; color: ${getDiffTextColorHex(g.difference)}; text-align: right;">${formatDiff(g.difference)}</td>
+              </tr>
+            `).join('')}
+            <tr style="background-color: #059669; color: #ffffff;">
+              <td colspan="2" style="padding: 11px 12px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right; text-transform: uppercase;">
+                TOTAL GERAL DE EQUIPAMENTOS EM ESTOQUE:
+              </td>
+              <td style="padding: 11px 10px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right;">
+                ${data.totalInitialEquipamentosGeral} un
+              </td>
+              <td style="padding: 11px 10px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right;">
+                ${data.totalEquipamentosGeral} un
+              </td>
+              <td style="padding: 11px 10px; border: 1.5px solid #047857; font-size: 14px; font-weight: 900; text-align: right;">
+                ${formatDiff(eqDiffTotal)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      `
+        : `
         <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 14px; border: 2.5px solid #059669; font-family: Arial, sans-serif; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
           <thead>
             <tr style="background-color: #065f46; color: #ffffff;">
               <th colspan="3" style="padding: 10px 14px; text-align: left; font-size: 14px; font-weight: 900; text-transform: uppercase; border: 1px solid #065f46;">
-                ESTOQUE CONSOLIDADO: EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}
+                ESTOQUE CONSOLIDADO: EQUIPAMENTOS
               </th>
             </tr>
             <tr style="background-color: #d1fae5; color: #064e3b; font-size: 12.5px; font-weight: 800; text-transform: uppercase;">
@@ -1320,7 +1850,7 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
             `).join('')}
             <tr style="background-color: #059669; color: #ffffff;">
               <td colspan="2" style="padding: 11px 14px; border: 1.5px solid #047857; font-size: 15px; font-weight: 900; text-align: right; text-transform: uppercase; letter-spacing: 0.5px;">
-                TOTAL GERAL DE EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}:
+                TOTAL GERAL DE EQUIPAMENTOS:
               </td>
               <td style="padding: 11px 14px; border: 1.5px solid #047857; font-size: 16px; font-weight: 900; text-align: right;">
                 ${data.totalEquipamentosGeral} un
@@ -1328,12 +1858,14 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
             </tr>
           </tbody>
         </table>
-      `
-      : `
+      `;
+    } else {
+      tablesHtml += `
         <table width="100%" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 14px; border: 1.5px solid #a7f3d0; font-family: Arial, sans-serif;">
           <tr><td style="padding: 10px 12px; font-size: 12.5px; color: #475569; font-weight: 600;">ESTOQUE CONSOLIDADO (EQUIPAMENTOS): Nenhum equipamento contado até o momento.</td></tr>
         </table>
       `;
+    }
   }
 
   tablesHtml += `</div>`;
@@ -1348,7 +1880,41 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
           ESTOQUE DE MATERIAIS (DETALHADO)
         </div>
 
-        ${data.dispMatRows.length > 0 ? `
+        ${data.dispMatRows.length > 0 ? (isRecontagem ? `
+          <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 10px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
+            <thead>
+              <tr style="background-color: #f1f5f9; color: #1e293b;">
+                <th colspan="5" style="padding: 7px 10px; text-align: left; font-size: 11.5px; font-weight: 800; border: 1px solid #cbd5e1; background-color: #e2e8f0;">
+                  1 ITENS DISPONÍVEIS
+                </th>
+              </tr>
+              <tr style="background-color: #f8fafc; color: #475569; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 6px 10px; border: 1px solid #cbd5e1; text-align: left; width: 15%;">Código</th>
+                <th style="padding: 6px 10px; border: 1px solid #cbd5e1; text-align: left;">Descrição do Material</th>
+                <th style="padding: 6px 10px; border: 1px solid #cbd5e1; text-align: right; width: 15%;">1ª Contagem</th>
+                <th style="padding: 6px 10px; border: 1px solid #cbd5e1; text-align: right; width: 15%;">Recontagem</th>
+                <th style="padding: 6px 10px; border: 1px solid #cbd5e1; text-align: right; width: 15%;">Diferença</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.dispMatRows.map(r => `
+                <tr>
+                  <td style="padding: 6px 10px; border: 1px solid #e2e8f0; font-family: monospace; font-size: 11.5px;">[${escapeHtml(r.code)}]</td>
+                  <td style="padding: 6px 10px; border: 1px solid #e2e8f0;">${escapeHtml(r.name)}</td>
+                  <td style="padding: 6px 10px; border: 1px solid #e2e8f0; text-align: right;">${r.initialQuantity} un</td>
+                  <td style="padding: 6px 10px; border: 1px solid #e2e8f0; text-align: right; font-weight: 700;">${r.quantity} un</td>
+                  <td style="padding: 6px 10px; border: 1px solid #e2e8f0; text-align: right; font-weight: 700; color: ${getDiffTextColorHex(r.difference)};">${formatDiff(r.difference)}</td>
+                </tr>
+              `).join('')}
+              <tr style="background-color: #f1f5f9; font-weight: bold;">
+                <td colspan="2" style="padding: 7px 10px; border: 1px solid #cbd5e1; text-align: right;">Subtotal Disponíveis:</td>
+                <td style="padding: 7px 10px; border: 1px solid #cbd5e1; text-align: right;">${data.subtotalInitialMatDisp} un</td>
+                <td style="padding: 7px 10px; border: 1px solid #cbd5e1; text-align: right; color: #047857;">${data.subtotalMatDisp} un</td>
+                <td style="padding: 7px 10px; border: 1px solid #cbd5e1; text-align: right; color: ${getDiffTextColorHex(data.subtotalMatDisp - data.subtotalInitialMatDisp)};">${formatDiff(data.subtotalMatDisp - data.subtotalInitialMatDisp)}</td>
+              </tr>
+            </tbody>
+          </table>
+        ` : `
           <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 10px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
             <thead>
               <tr style="background-color: #f1f5f9; color: #1e293b;">
@@ -1376,9 +1942,43 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
               </tr>
             </tbody>
           </table>
-        ` : ''}
+        `) : ''}
 
-        ${data.danifMatRows.length > 0 ? `
+        ${data.danifMatRows.length > 0 ? (isRecontagem ? `
+          <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 12px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
+            <thead>
+              <tr style="background-color: #fee2e2; color: #991b1b;">
+                <th colspan="5" style="padding: 7px 10px; text-align: left; font-size: 11.5px; font-weight: 800; border: 1px solid #fca5a5;">
+                  2 ITENS DANIFICADOS
+                </th>
+              </tr>
+              <tr style="background-color: #fff5f5; color: #7f1d1d; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: left; width: 15%;">Código</th>
+                <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: left;">Descrição do Material</th>
+                <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: right; width: 15%;">1ª Contagem</th>
+                <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: right; width: 15%;">Recontagem</th>
+                <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: right; width: 15%;">Diferença</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.danifMatRows.map(r => `
+                <tr>
+                  <td style="padding: 6px 10px; border: 1px solid #fecaca; font-family: monospace; font-size: 11.5px;">[${escapeHtml(r.code)}]</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fecaca;">${escapeHtml(r.name)}</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fecaca; text-align: right;">${r.initialQuantity} un</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fecaca; text-align: right; font-weight: 700; color: #b91c1c;">${r.quantity} un</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fecaca; text-align: right; font-weight: 700; color: ${getDiffTextColorHex(r.difference)};">${formatDiff(r.difference)}</td>
+                </tr>
+              `).join('')}
+              <tr style="background-color: #fee2e2; font-weight: bold;">
+                <td colspan="2" style="padding: 7px 10px; border: 1px solid #fca5a5; text-align: right;">Subtotal Danificados:</td>
+                <td style="padding: 7px 10px; border: 1px solid #fca5a5; text-align: right;">${data.subtotalInitialMatDanif} un</td>
+                <td style="padding: 7px 10px; border: 1px solid #fca5a5; text-align: right; color: #b91c1c;">${data.subtotalMatDanif} un</td>
+                <td style="padding: 7px 10px; border: 1px solid #fca5a5; text-align: right; color: ${getDiffTextColorHex(data.subtotalMatDanif - data.subtotalInitialMatDanif)};">${formatDiff(data.subtotalMatDanif - data.subtotalInitialMatDanif)}</td>
+              </tr>
+            </tbody>
+          </table>
+        ` : `
           <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 12px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
             <thead>
               <tr style="background-color: #fee2e2; color: #991b1b;">
@@ -1406,9 +2006,45 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
               </tr>
             </tbody>
           </table>
-        ` : ''}
+        `) : ''}
 
-        ${data.vazioRotaRows.length > 0 ? `
+        ${data.vazioRotaRows.length > 0 ? (isRecontagem ? `
+          <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 12px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
+            <thead>
+              <tr style="background-color: #fef3c7; color: #92400e;">
+                <th colspan="6" style="padding: 7px 10px; text-align: left; font-size: 11.5px; font-weight: 800; border: 1px solid #fcd34d;">
+                  3 ITENS VAZIO E EM ROTA
+                </th>
+              </tr>
+              <tr style="background-color: #fffbeb; color: #78350f; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 6px 10px; border: 1px solid #fcd34d; text-align: left; width: 14%;">Código</th>
+                <th style="padding: 6px 10px; border: 1px solid #fcd34d; text-align: left;">Descrição do Material</th>
+                <th style="padding: 6px 10px; border: 1px solid #fcd34d; text-align: left; width: 14%;">Situação</th>
+                <th style="padding: 6px 10px; border: 1px solid #fcd34d; text-align: right; width: 14%;">1ª Contagem</th>
+                <th style="padding: 6px 10px; border: 1px solid #fcd34d; text-align: right; width: 14%;">Recontagem</th>
+                <th style="padding: 6px 10px; border: 1px solid #fcd34d; text-align: right; width: 14%;">Diferença</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.vazioRotaRows.map(r => `
+                <tr>
+                  <td style="padding: 6px 10px; border: 1px solid #fde68a; font-family: monospace; font-size: 11.5px;">[${escapeHtml(r.code)}]</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fde68a;">${escapeHtml(r.name)}</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fde68a; font-weight: 600; color: #92400e;">${escapeHtml(r.situation)}</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fde68a; text-align: right;">${r.initialQuantity} un</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fde68a; text-align: right; font-weight: 700;">${r.quantity} un</td>
+                  <td style="padding: 6px 10px; border: 1px solid #fde68a; text-align: right; font-weight: 700; color: ${getDiffTextColorHex(r.difference)};">${formatDiff(r.difference)}</td>
+                </tr>
+              `).join('')}
+              <tr style="background-color: #fef3c7; font-weight: bold;">
+                <td colspan="3" style="padding: 7px 10px; border: 1px solid #fcd34d; text-align: right;">Subtotal Vazio e Em Rota:</td>
+                <td style="padding: 7px 10px; border: 1px solid #fcd34d; text-align: right;">${data.subtotalInitialMatVazioRota} un</td>
+                <td style="padding: 7px 10px; border: 1px solid #fcd34d; text-align: right; color: #92400e;">${data.subtotalMatVazioRota} un</td>
+                <td style="padding: 7px 10px; border: 1px solid #fcd34d; text-align: right; color: ${getDiffTextColorHex(data.subtotalMatVazioRota - data.subtotalInitialMatVazioRota)};">${formatDiff(data.subtotalMatVazioRota - data.subtotalInitialMatVazioRota)}</td>
+              </tr>
+            </tbody>
+          </table>
+        ` : `
           <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 12px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
             <thead>
               <tr style="background-color: #fef3c7; color: #92400e;">
@@ -1438,7 +2074,7 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
               </tr>
             </tbody>
           </table>
-        ` : ''}
+        `) : ''}
       </div>
     `;
   }
@@ -1451,34 +2087,42 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
       tablesHtml += `
         <div style="margin-bottom: 24px;">
           <div style="background-color: #0f172a; color: #ffffff; padding: 10px 14px; font-size: 13px; font-weight: 800; letter-spacing: 0.5px; border-radius: 6px 6px 0 0; text-transform: uppercase;">
-            ESTOQUE DE EQUIPAMENTOS (RECONTAGEM - DETALHADO)
+            ESTOQUE DE EQUIPAMENTOS (RECONTAGEM - COMPARATIVO)
           </div>
 
           ${data.emEstoqueEquips.length > 0 ? `
             <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 10px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
               <thead>
                 <tr style="background-color: #d1fae5; color: #065f46;">
-                  <th colspan="3" style="padding: 7px 10px; text-align: left; font-size: 11.5px; font-weight: 800; border: 1px solid #6ee7b7; background-color: #a7f3d0;">
+                  <th colspan="6" style="padding: 7px 10px; text-align: left; font-size: 11.5px; font-weight: 800; border: 1px solid #6ee7b7; background-color: #a7f3d0;">
                     1 EQUIPAMENTOS EM ESTOQUE
                   </th>
                 </tr>
                 <tr style="background-color: #f0fdf4; color: #166534; font-size: 11px; text-transform: uppercase;">
-                  <th style="padding: 6px 10px; border: 1px solid #6ee7b7; text-align: left; width: 14%;">Código</th>
-                  <th style="padding: 6px 10px; border: 1px solid #6ee7b7; text-align: left; width: 18%;">Patrimônio</th>
-                  <th style="padding: 6px 10px; border: 1px solid #6ee7b7; text-align: left;">Descrição / Especificações</th>
+                  <th style="padding: 6px 8px; border: 1px solid #6ee7b7; text-align: left; width: 12%;">Código</th>
+                  <th style="padding: 6px 8px; border: 1px solid #6ee7b7; text-align: left; width: 15%;">Patrimônio</th>
+                  <th style="padding: 6px 8px; border: 1px solid #6ee7b7; text-align: left;">Descrição / Especificações</th>
+                  <th style="padding: 6px 8px; border: 1px solid #6ee7b7; text-align: right; width: 13%;">1ª Cont.</th>
+                  <th style="padding: 6px 8px; border: 1px solid #6ee7b7; text-align: right; width: 12%;">Recont.</th>
+                  <th style="padding: 6px 8px; border: 1px solid #6ee7b7; text-align: right; width: 13%;">Diferença</th>
                 </tr>
               </thead>
               <tbody>
                 ${data.emEstoqueEquips.map(eq => `
                   <tr>
-                    <td style="padding: 6px 10px; border: 1px solid #a7f3d0; font-family: monospace; font-size: 11.5px;">${eq.code ? `[${escapeHtml(eq.code)}]` : '-'}</td>
-                    <td style="padding: 6px 10px; border: 1px solid #a7f3d0; font-weight: 700; color: #047857;">${escapeHtml(eq.patrimony)}</td>
-                    <td style="padding: 6px 10px; border: 1px solid #a7f3d0;">${escapeHtml(eq.fullNameWithSpecs)}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #a7f3d0; font-family: monospace; font-size: 11.5px;">${eq.code ? `[${escapeHtml(eq.code)}]` : '-'}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #a7f3d0; font-weight: 700; color: #047857;">${escapeHtml(eq.patrimony)}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #a7f3d0;">${escapeHtml(eq.fullNameWithSpecs)}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #a7f3d0; text-align: right;">${eq.initialQuantity} un</td>
+                    <td style="padding: 6px 8px; border: 1px solid #a7f3d0; text-align: right; font-weight: 700; color: #047857;">${eq.recountQuantity} un</td>
+                    <td style="padding: 6px 8px; border: 1px solid #a7f3d0; text-align: right; font-weight: 700; color: ${getDiffTextColorHex(eq.difference)};">${formatDiff(eq.difference)}</td>
                   </tr>
                 `).join('')}
                 <tr style="background-color: #d1fae5; font-weight: bold;">
-                  <td colspan="2" style="padding: 7px 10px; border: 1px solid #6ee7b7; text-align: right;">Subtotal Em Estoque:</td>
-                  <td style="padding: 7px 10px; border: 1px solid #6ee7b7; text-align: right; color: #047857;">${data.emEstoqueEquips.length} un</td>
+                  <td colspan="3" style="padding: 7px 10px; border: 1px solid #6ee7b7; text-align: right;">Subtotal Em Estoque:</td>
+                  <td style="padding: 7px 8px; border: 1px solid #6ee7b7; text-align: right;">${data.subtotalInitialEmEstoque} un</td>
+                  <td style="padding: 7px 8px; border: 1px solid #6ee7b7; text-align: right; color: #047857;">${data.emEstoqueEquips.length} un</td>
+                  <td style="padding: 7px 8px; border: 1px solid #6ee7b7; text-align: right; color: ${getDiffTextColorHex(data.emEstoqueEquips.length - data.subtotalInitialEmEstoque)};">${formatDiff(data.emEstoqueEquips.length - data.subtotalInitialEmEstoque)}</td>
                 </tr>
               </tbody>
             </table>
@@ -1488,27 +2132,35 @@ export function generateStockReportHtml(params: GenerateReportParams): string {
             <table width="100%" cellpadding="6" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 12px; border: 1px solid #cbd5e1; font-size: 12px; font-family: Arial, sans-serif;">
               <thead>
                 <tr style="background-color: #fee2e2; color: #991b1b;">
-                  <th colspan="3" style="padding: 7px 10px; text-align: left; font-size: 11.5px; font-weight: 800; border: 1px solid #fca5a5; background-color: #fecaca;">
+                  <th colspan="6" style="padding: 7px 10px; text-align: left; font-size: 11.5px; font-weight: 800; border: 1px solid #fca5a5; background-color: #fecaca;">
                     2 EQUIPAMENTOS NÃO CONSTAM EM ESTOQUE
                   </th>
                 </tr>
                 <tr style="background-color: #fff5f5; color: #7f1d1d; font-size: 11px; text-transform: uppercase;">
-                  <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: left; width: 14%;">Código</th>
-                  <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: left; width: 18%;">Patrimônio</th>
-                  <th style="padding: 6px 10px; border: 1px solid #fca5a5; text-align: left;">Descrição / Especificações</th>
+                  <th style="padding: 6px 8px; border: 1px solid #fca5a5; text-align: left; width: 12%;">Código</th>
+                  <th style="padding: 6px 8px; border: 1px solid #fca5a5; text-align: left; width: 15%;">Patrimônio</th>
+                  <th style="padding: 6px 8px; border: 1px solid #fca5a5; text-align: left;">Descrição / Especificações</th>
+                  <th style="padding: 6px 8px; border: 1px solid #fca5a5; text-align: right; width: 13%;">1ª Cont.</th>
+                  <th style="padding: 6px 8px; border: 1px solid #fca5a5; text-align: right; width: 12%;">Recont.</th>
+                  <th style="padding: 6px 8px; border: 1px solid #fca5a5; text-align: right; width: 13%;">Diferença</th>
                 </tr>
               </thead>
               <tbody>
                 ${data.naoConstaEquips.map(eq => `
                   <tr>
-                    <td style="padding: 6px 10px; border: 1px solid #fecaca; font-family: monospace; font-size: 11.5px;">${eq.code ? `[${escapeHtml(eq.code)}]` : '-'}</td>
-                    <td style="padding: 6px 10px; border: 1px solid #fecaca; font-weight: 700; color: #b91c1c;">${escapeHtml(eq.patrimony)}</td>
-                    <td style="padding: 6px 10px; border: 1px solid #fecaca;">${escapeHtml(eq.fullNameWithSpecs)}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #fecaca; font-family: monospace; font-size: 11.5px;">${eq.code ? `[${escapeHtml(eq.code)}]` : '-'}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #fecaca; font-weight: 700; color: #b91c1c;">${escapeHtml(eq.patrimony)}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #fecaca;">${escapeHtml(eq.fullNameWithSpecs)}</td>
+                    <td style="padding: 6px 8px; border: 1px solid #fecaca; text-align: right;">${eq.initialQuantity} un</td>
+                    <td style="padding: 6px 8px; border: 1px solid #fecaca; text-align: right; font-weight: 700; color: #b91c1c;">${eq.recountQuantity} un</td>
+                    <td style="padding: 6px 8px; border: 1px solid #fecaca; text-align: right; font-weight: 700; color: ${getDiffTextColorHex(eq.difference)};">${formatDiff(eq.difference)}</td>
                   </tr>
                 `).join('')}
                 <tr style="background-color: #fee2e2; font-weight: bold;">
-                  <td colspan="2" style="padding: 7px 10px; border: 1px solid #fca5a5; text-align: right;">Subtotal Não Constam em Estoque:</td>
-                  <td style="padding: 7px 10px; border: 1px solid #fca5a5; text-align: right; color: #b91c1c;">${data.naoConstaEquips.length} un</td>
+                  <td colspan="3" style="padding: 7px 10px; border: 1px solid #fca5a5; text-align: right;">Subtotal Não Constam em Estoque:</td>
+                  <td style="padding: 7px 8px; border: 1px solid #fca5a5; text-align: right;">${data.subtotalInitialNaoConsta} un</td>
+                  <td style="padding: 7px 8px; border: 1px solid #fca5a5; text-align: right; color: #b91c1c;">0 un</td>
+                  <td style="padding: 7px 8px; border: 1px solid #fca5a5; text-align: right; color: ${getDiffTextColorHex(0 - data.subtotalInitialNaoConsta)};">${formatDiff(0 - data.subtotalInitialNaoConsta)}</td>
                 </tr>
               </tbody>
             </table>
@@ -1859,76 +2511,152 @@ function buildPdfWithLogo(
 
   if (selectedStock === 'materiais' || selectedStock === 'ambos') {
     if (data.consolidadoMatRows.length > 0) {
-      autoTable(doc, {
-        startY: y,
-        margin: { left: margin, right: margin },
-        theme: 'grid',
-        showHead: 'everyPage',
-        showFoot: 'lastPage',
-        styles: {
-          font: 'helvetica',
-          fontSize: 8.5,
-          cellPadding: 2.3,
-          lineColor: [167, 243, 208],
-          lineWidth: 0.35,
-          textColor: [15, 23, 42],
-          valign: 'middle',
-        },
-        head: [
-          [
-            {
-              content: 'ESTOQUE CONSOLIDADO: MATERIAIS',
-              colSpan: 3,
-              styles: {
-                fillColor: [6, 95, 70],
-                textColor: [255, 255, 255],
-                fontStyle: 'bold',
-                fontSize: 9,
-                halign: 'left',
+      if (isRecontagem) {
+        const matDiffTotal = data.totalGeralMateriais - data.totalInitialMateriais;
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8.2,
+            cellPadding: 2.2,
+            lineColor: [167, 243, 208],
+            lineWidth: 0.35,
+            textColor: [15, 23, 42],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: 'ESTOQUE CONSOLIDADO: MATERIAIS (COMPARATIVO)',
+                colSpan: 5,
+                styles: {
+                  fillColor: [6, 95, 70],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 9,
+                  halign: 'left',
+                },
               },
-            },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO ITEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: '1ª CONTAGEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+              { content: 'RECONTAGEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+              { content: 'DIFERENÇA', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+            ],
           ],
-          [
-            { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
-            { content: 'DESCRIÇÃO DO ITEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
-            { content: 'QUANTIDADE', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        body: data.consolidadoMatRows.map(r => [
-          { content: `[${r.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
-          { content: r.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
-          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
-        ]) as RowInput[],
-        foot: [
-          [
-            {
-              content: 'TOTAL GERAL DE MATERIAIS:',
-              colSpan: 2,
-              styles: {
-                fillColor: [5, 150, 105],
-                textColor: [255, 255, 255],
-                fontStyle: 'bold',
-                fontSize: 9.5,
-                halign: 'right',
+          body: data.consolidadoMatRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
+            { content: r.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
+            { content: `${r.initialQuantity} un`, styles: { fontStyle: 'bold', textColor: [51, 65, 85], halign: 'right' } },
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
+            { content: formatDiff(r.difference), styles: { fontStyle: 'bold', textColor: getDiffPdfColor(r.difference), halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              {
+                content: 'TOTAL GERAL DE MATERIAIS:',
+                colSpan: 2,
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9, halign: 'right' },
               },
-            },
-            {
-              content: `${data.totalGeralMateriais} un`,
-              styles: {
-                fillColor: [5, 150, 105],
-                textColor: [255, 255, 255],
-                fontStyle: 'bold',
-                fontSize: 10,
-                halign: 'right',
+              {
+                content: `${data.totalInitialMateriais} un`,
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9.5, halign: 'right' },
               },
-            },
+              {
+                content: `${data.totalGeralMateriais} un`,
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9.5, halign: 'right' },
+              },
+              {
+                content: formatDiff(matDiffTotal),
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9.5, halign: 'right' },
+              },
+            ],
           ],
-        ],
-        columnStyles: {
-          0: { cellWidth: 34 },
-          2: { cellWidth: 36, halign: 'right' },
-        },
-      });
+          columnStyles: {
+            0: { cellWidth: 26 },
+            2: { cellWidth: 26, halign: 'right' },
+            3: { cellWidth: 26, halign: 'right' },
+            4: { cellWidth: 26, halign: 'right' },
+          },
+        });
+      } else {
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8.5,
+            cellPadding: 2.3,
+            lineColor: [167, 243, 208],
+            lineWidth: 0.35,
+            textColor: [15, 23, 42],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: 'ESTOQUE CONSOLIDADO: MATERIAIS',
+                colSpan: 3,
+                styles: {
+                  fillColor: [6, 95, 70],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 9,
+                  halign: 'left',
+                },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO ITEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: 'QUANTIDADE', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.consolidadoMatRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
+            { content: r.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              {
+                content: 'TOTAL GERAL DE MATERIAIS:',
+                colSpan: 2,
+                styles: {
+                  fillColor: [5, 150, 105],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 9.5,
+                  halign: 'right',
+                },
+              },
+              {
+                content: `${data.totalGeralMateriais} un`,
+                styles: {
+                  fillColor: [5, 150, 105],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 10,
+                  halign: 'right',
+                },
+              },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 34 },
+            2: { cellWidth: 36, halign: 'right' },
+          },
+        });
+      }
       y = getLastAutoTableY(doc, y) + 4.5;
     } else {
       y = drawEmptyBox(
@@ -1940,77 +2668,153 @@ function buildPdfWithLogo(
   }
 
   if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
-    if (data.totalEquipamentosGeral > 0) {
-      autoTable(doc, {
-        startY: y,
-        margin: { left: margin, right: margin },
-        theme: 'grid',
-        showHead: 'everyPage',
-        showFoot: 'lastPage',
-        styles: {
-          font: 'helvetica',
-          fontSize: 8.5,
-          cellPadding: 2.3,
-          lineColor: [167, 243, 208],
-          lineWidth: 0.35,
-          textColor: [15, 23, 42],
-          valign: 'middle',
-        },
-        head: [
-          [
-            {
-              content: `ESTOQUE CONSOLIDADO: EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}`,
-              colSpan: 3,
-              styles: {
-                fillColor: [6, 95, 70],
-                textColor: [255, 255, 255],
-                fontStyle: 'bold',
-                fontSize: 9,
-                halign: 'left',
+    if (isRecontagem ? data.consolidadoEquipRows.length > 0 : data.totalEquipamentosGeral > 0) {
+      if (isRecontagem) {
+        const eqDiffTotal = data.totalEquipamentosGeral - data.totalInitialEquipamentosGeral;
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8.2,
+            cellPadding: 2.2,
+            lineColor: [167, 243, 208],
+            lineWidth: 0.35,
+            textColor: [15, 23, 42],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: 'ESTOQUE CONSOLIDADO: EQUIPAMENTOS EM ESTOQUE (COMPARATIVO)',
+                colSpan: 5,
+                styles: {
+                  fillColor: [6, 95, 70],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 9,
+                  halign: 'left',
+                },
               },
-            },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO EQUIPAMENTO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: '1ª CONTAGEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+              { content: 'RECONTAGEM', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+              { content: 'DIFERENÇA', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+            ],
           ],
-          [
-            { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
-            { content: 'DESCRIÇÃO DO EQUIPAMENTO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
-            { content: 'QUANTIDADE', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        body: data.consolidadoEquipRows.map(g => [
-          { content: `[${g.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
-          { content: g.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
-          { content: `${g.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
-        ]) as RowInput[],
-        foot: [
-          [
-            {
-              content: `TOTAL GERAL DE EQUIPAMENTOS${isRecontagem ? ' EM ESTOQUE' : ''}:`,
-              colSpan: 2,
-              styles: {
-                fillColor: [5, 150, 105],
-                textColor: [255, 255, 255],
-                fontStyle: 'bold',
-                fontSize: 9.5,
-                halign: 'right',
+          body: data.consolidadoEquipRows.map(g => [
+            { content: `[${g.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
+            { content: g.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
+            { content: `${g.initialQuantity} un`, styles: { fontStyle: 'bold', textColor: [51, 65, 85], halign: 'right' } },
+            { content: `${g.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
+            { content: formatDiff(g.difference), styles: { fontStyle: 'bold', textColor: getDiffPdfColor(g.difference), halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              {
+                content: 'TOTAL GERAL DE EQUIPAMENTOS EM ESTOQUE:',
+                colSpan: 2,
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9, halign: 'right' },
               },
-            },
-            {
-              content: `${data.totalEquipamentosGeral} un`,
-              styles: {
-                fillColor: [5, 150, 105],
-                textColor: [255, 255, 255],
-                fontStyle: 'bold',
-                fontSize: 10,
-                halign: 'right',
+              {
+                content: `${data.totalInitialEquipamentosGeral} un`,
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9.5, halign: 'right' },
               },
-            },
+              {
+                content: `${data.totalEquipamentosGeral} un`,
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9.5, halign: 'right' },
+              },
+              {
+                content: formatDiff(eqDiffTotal),
+                styles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9.5, halign: 'right' },
+              },
+            ],
           ],
-        ],
-        columnStyles: {
-          0: { cellWidth: 34 },
-          2: { cellWidth: 36, halign: 'right' },
-        },
-      });
+          columnStyles: {
+            0: { cellWidth: 26 },
+            2: { cellWidth: 26, halign: 'right' },
+            3: { cellWidth: 26, halign: 'right' },
+            4: { cellWidth: 26, halign: 'right' },
+          },
+        });
+      } else {
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8.5,
+            cellPadding: 2.3,
+            lineColor: [167, 243, 208],
+            lineWidth: 0.35,
+            textColor: [15, 23, 42],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: 'ESTOQUE CONSOLIDADO: EQUIPAMENTOS',
+                colSpan: 3,
+                styles: {
+                  fillColor: [6, 95, 70],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 9,
+                  halign: 'left',
+                },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO EQUIPAMENTO', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold' } },
+              { content: 'QUANTIDADE', styles: { fillColor: [209, 250, 229], textColor: [6, 78, 59], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.consolidadoEquipRows.map(g => [
+            { content: `[${g.code}]`, styles: { font: 'courier', fontStyle: 'bold', textColor: [6, 95, 70] } },
+            { content: g.name, styles: { fontStyle: 'bold', textColor: [15, 23, 42] } },
+            { content: `${g.quantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              {
+                content: 'TOTAL GERAL DE EQUIPAMENTOS:',
+                colSpan: 2,
+                styles: {
+                  fillColor: [5, 150, 105],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 9.5,
+                  halign: 'right',
+                },
+              },
+              {
+                content: `${data.totalEquipamentosGeral} un`,
+                styles: {
+                  fillColor: [5, 150, 105],
+                  textColor: [255, 255, 255],
+                  fontStyle: 'bold',
+                  fontSize: 10,
+                  halign: 'right',
+                },
+              },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 34 },
+            2: { cellWidth: 36, halign: 'right' },
+          },
+        });
+      }
       y = getLastAutoTableY(doc, y) + 5;
     } else {
       y = drawEmptyBox(
@@ -2028,170 +2832,8 @@ function buildPdfWithLogo(
     y = drawSectionBanner(y + 1, 'ESTOQUE DE MATERIAIS (DETALHADO)', [15, 23, 42]);
 
     if (data.dispMatRows.length > 0) {
-      autoTable(doc, {
-        startY: y,
-        margin: { left: margin, right: margin },
-        theme: 'grid',
-        showHead: 'everyPage',
-        showFoot: 'lastPage',
-        styles: {
-          font: 'helvetica',
-          fontSize: 8,
-          cellPadding: 2,
-          lineColor: [203, 213, 225],
-          lineWidth: 0.25,
-          textColor: [30, 41, 59],
-          valign: 'middle',
-        },
-        head: [
-          [
-            {
-              content: '1 ITENS DISPONÍVEIS',
-              colSpan: 3,
-              styles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontStyle: 'bold', fontSize: 8.5 },
-            },
-          ],
-          [
-            { content: 'CÓDIGO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
-            { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
-            { content: 'QUANTIDADE', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        body: data.dispMatRows.map(r => [
-          { content: `[${r.code}]`, styles: { font: 'courier' } },
-          r.name,
-          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
-        ]) as RowInput[],
-        foot: [
-          [
-            { content: 'Subtotal Disponíveis:', colSpan: 2, styles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
-            { content: `${data.subtotalMatDisp} un`, styles: { fillColor: [241, 245, 249], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        columnStyles: {
-          0: { cellWidth: 32 },
-          2: { cellWidth: 32, halign: 'right' },
-        },
-      });
-      y = getLastAutoTableY(doc, y) + 4;
-    }
-
-    if (data.danifMatRows.length > 0) {
-      autoTable(doc, {
-        startY: y,
-        margin: { left: margin, right: margin },
-        theme: 'grid',
-        showHead: 'everyPage',
-        showFoot: 'lastPage',
-        styles: {
-          font: 'helvetica',
-          fontSize: 8,
-          cellPadding: 2,
-          lineColor: [252, 165, 165],
-          lineWidth: 0.25,
-          textColor: [30, 41, 59],
-          valign: 'middle',
-        },
-        head: [
-          [
-            {
-              content: '2 ITENS DANIFICADOS',
-              colSpan: 3,
-              styles: { fillColor: [254, 226, 226], textColor: [153, 27, 27], fontStyle: 'bold', fontSize: 8.5 },
-            },
-          ],
-          [
-            { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
-            { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
-            { content: 'QUANTIDADE', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        body: data.danifMatRows.map(r => [
-          { content: `[${r.code}]`, styles: { font: 'courier' } },
-          r.name,
-          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [185, 28, 28], halign: 'right' } },
-        ]) as RowInput[],
-        foot: [
-          [
-            { content: 'Subtotal Danificados:', colSpan: 2, styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
-            { content: `${data.subtotalMatDanif} un`, styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        columnStyles: {
-          0: { cellWidth: 32 },
-          2: { cellWidth: 32, halign: 'right' },
-        },
-      });
-      y = getLastAutoTableY(doc, y) + 4;
-    }
-
-    if (data.vazioRotaRows.length > 0) {
-      autoTable(doc, {
-        startY: y,
-        margin: { left: margin, right: margin },
-        theme: 'grid',
-        showHead: 'everyPage',
-        showFoot: 'lastPage',
-        styles: {
-          font: 'helvetica',
-          fontSize: 8,
-          cellPadding: 2,
-          lineColor: [252, 211, 77],
-          lineWidth: 0.25,
-          textColor: [30, 41, 59],
-          valign: 'middle',
-        },
-        head: [
-          [
-            {
-              content: '3 ITENS VAZIO E EM ROTA',
-              colSpan: 4,
-              styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', fontSize: 8.5 },
-            },
-          ],
-          [
-            { content: 'CÓDIGO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
-            { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
-            { content: 'SITUAÇÃO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
-            { content: 'QUANTIDADE', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        body: data.vazioRotaRows.map(r => [
-          { content: `[${r.code}]`, styles: { font: 'courier' } },
-          r.name,
-          { content: r.situation, styles: { fontStyle: 'bold', textColor: [146, 64, 14] } },
-          { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
-        ]) as RowInput[],
-        foot: [
-          [
-            { content: 'Subtotal Vazio e Em Rota:', colSpan: 3, styles: { fillColor: [254, 243, 199], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
-            { content: `${data.subtotalMatVazioRota} un`, styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', halign: 'right' } },
-          ],
-        ],
-        columnStyles: {
-          0: { cellWidth: 30 },
-          2: { cellWidth: 32 },
-          3: { cellWidth: 30, halign: 'right' },
-        },
-      });
-      y = getLastAutoTableY(doc, y) + 5;
-    }
-  }
-
-  // -------------------------------------------------------------
-  // DETALHAMENTO: ESTOQUE DE EQUIPAMENTOS (DETALHADO)
-  // -------------------------------------------------------------
-  if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
-    y = drawSectionBanner(
-      y + 1,
-      isRecontagem
-        ? 'ESTOQUE DE EQUIPAMENTOS (RECONTAGEM - DETALHADO)'
-        : 'ESTOQUE DE EQUIPAMENTOS (DETALHADO)',
-      [15, 23, 42]
-    );
-
-    if (isRecontagem) {
-      if (data.emEstoqueEquips.length > 0) {
+      if (isRecontagem) {
+        const diffDisp = data.subtotalMatDisp - data.subtotalInitialMatDisp;
         autoTable(doc, {
           startY: y,
           margin: { left: margin, right: margin },
@@ -2202,7 +2844,7 @@ function buildPdfWithLogo(
             font: 'helvetica',
             fontSize: 8,
             cellPadding: 2,
-            lineColor: [110, 231, 183],
+            lineColor: [203, 213, 225],
             lineWidth: 0.25,
             textColor: [30, 41, 59],
             valign: 'middle',
@@ -2210,37 +2852,94 @@ function buildPdfWithLogo(
           head: [
             [
               {
-                content: '1 EQUIPAMENTOS EM ESTOQUE',
-                colSpan: 3,
-                styles: { fillColor: [167, 243, 208], textColor: [6, 95, 70], fontStyle: 'bold', fontSize: 8.5 },
+                content: '1 ITENS DISPONÍVEIS',
+                colSpan: 5,
+                styles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontStyle: 'bold', fontSize: 8.5 },
               },
             ],
             [
-              { content: 'CÓDIGO', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
-              { content: 'PATRIMÔNIO', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
-              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
+              { content: 'CÓDIGO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
+              { content: '1ª CONTAGEM', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold', halign: 'right' } },
+              { content: 'RECONTAGEM', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold', halign: 'right' } },
+              { content: 'DIFERENÇA', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold', halign: 'right' } },
             ],
           ],
-          body: data.emEstoqueEquips.map(eq => [
-            { content: eq.code ? `[${eq.code}]` : '-', styles: { font: 'courier' } },
-            { content: eq.patrimony, styles: { fontStyle: 'bold', textColor: [4, 120, 87] } },
-            eq.fullNameWithSpecs,
+          body: data.dispMatRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier' } },
+            r.name,
+            { content: `${r.initialQuantity} un`, styles: { halign: 'right' } },
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
+            { content: formatDiff(r.difference), styles: { fontStyle: 'bold', textColor: getDiffPdfColor(r.difference), halign: 'right' } },
           ]) as RowInput[],
           foot: [
             [
-              { content: 'Subtotal Em Estoque:', colSpan: 2, styles: { fillColor: [209, 250, 229], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
-              { content: `${data.emEstoqueEquips.length} un`, styles: { fillColor: [209, 250, 229], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' } },
+              { content: 'Subtotal Disponíveis:', colSpan: 2, styles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalInitialMatDisp} un`, styles: { fillColor: [241, 245, 249], textColor: [51, 65, 85], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalMatDisp} un`, styles: { fillColor: [241, 245, 249], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' } },
+              { content: formatDiff(diffDisp), styles: { fillColor: [241, 245, 249], textColor: getDiffPdfColor(diffDisp), fontStyle: 'bold', halign: 'right' } },
             ],
           ],
           columnStyles: {
             0: { cellWidth: 26 },
-            1: { cellWidth: 32 },
+            2: { cellWidth: 25, halign: 'right' },
+            3: { cellWidth: 25, halign: 'right' },
+            4: { cellWidth: 25, halign: 'right' },
           },
         });
-        y = getLastAutoTableY(doc, y) + 4;
+      } else {
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [203, 213, 225],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '1 ITENS DISPONÍVEIS',
+                colSpan: 3,
+                styles: { fillColor: [226, 232, 240], textColor: [30, 41, 59], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold' } },
+              { content: 'QUANTIDADE', styles: { fillColor: [248, 250, 252], textColor: [71, 85, 105], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.dispMatRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier' } },
+            r.name,
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Disponíveis:', colSpan: 2, styles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalMatDisp} un`, styles: { fillColor: [241, 245, 249], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 32 },
+            2: { cellWidth: 32, halign: 'right' },
+          },
+        });
       }
+      y = getLastAutoTableY(doc, y) + 4;
+    }
 
-      if (data.naoConstaEquips.length > 0) {
+    if (data.danifMatRows.length > 0) {
+      if (isRecontagem) {
+        const diffDanif = data.subtotalMatDanif - data.subtotalInitialMatDanif;
         autoTable(doc, {
           startY: y,
           margin: { left: margin, right: margin },
@@ -2259,8 +2958,300 @@ function buildPdfWithLogo(
           head: [
             [
               {
-                content: '2 EQUIPAMENTOS NÃO CONSTAM EM ESTOQUE',
+                content: '2 ITENS DANIFICADOS',
+                colSpan: 5,
+                styles: { fillColor: [254, 226, 226], textColor: [153, 27, 27], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+              { content: '1ª CONTAGEM', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
+              { content: 'RECONTAGEM', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
+              { content: 'DIFERENÇA', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.danifMatRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier' } },
+            r.name,
+            { content: `${r.initialQuantity} un`, styles: { halign: 'right' } },
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [185, 28, 28], halign: 'right' } },
+            { content: formatDiff(r.difference), styles: { fontStyle: 'bold', textColor: getDiffPdfColor(r.difference), halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Danificados:', colSpan: 2, styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalInitialMatDanif} un`, styles: { fillColor: [254, 226, 226], textColor: [51, 65, 85], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalMatDanif} un`, styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' } },
+              { content: formatDiff(diffDanif), styles: { fillColor: [254, 226, 226], textColor: getDiffPdfColor(diffDanif), fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 26 },
+            2: { cellWidth: 25, halign: 'right' },
+            3: { cellWidth: 25, halign: 'right' },
+            4: { cellWidth: 25, halign: 'right' },
+          },
+        });
+      } else {
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [252, 165, 165],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '2 ITENS DANIFICADOS',
                 colSpan: 3,
+                styles: { fillColor: [254, 226, 226], textColor: [153, 27, 27], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+              { content: 'QUANTIDADE', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.danifMatRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier' } },
+            r.name,
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', textColor: [185, 28, 28], halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Danificados:', colSpan: 2, styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalMatDanif} un`, styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 32 },
+            2: { cellWidth: 32, halign: 'right' },
+          },
+        });
+      }
+      y = getLastAutoTableY(doc, y) + 4;
+    }
+
+    if (data.vazioRotaRows.length > 0) {
+      if (isRecontagem) {
+        const diffVr = data.subtotalMatVazioRota - data.subtotalInitialMatVazioRota;
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 7.8,
+            cellPadding: 2,
+            lineColor: [252, 211, 77],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '3 ITENS VAZIO E EM ROTA',
+                colSpan: 6,
+                styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+              { content: 'SITUAÇÃO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+              { content: '1ª CONT.', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold', halign: 'right' } },
+              { content: 'RECONT.', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold', halign: 'right' } },
+              { content: 'DIFERENÇA', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.vazioRotaRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier' } },
+            r.name,
+            { content: r.situation, styles: { fontStyle: 'bold', textColor: [146, 64, 14] } },
+            { content: `${r.initialQuantity} un`, styles: { halign: 'right' } },
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
+            { content: formatDiff(r.difference), styles: { fontStyle: 'bold', textColor: getDiffPdfColor(r.difference), halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Vazio e Em Rota:', colSpan: 3, styles: { fillColor: [254, 243, 199], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalInitialMatVazioRota} un`, styles: { fillColor: [254, 243, 199], textColor: [51, 65, 85], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalMatVazioRota} un`, styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', halign: 'right' } },
+              { content: formatDiff(diffVr), styles: { fillColor: [254, 243, 199], textColor: getDiffPdfColor(diffVr), fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 22 },
+            2: { cellWidth: 24 },
+            3: { cellWidth: 22, halign: 'right' },
+            4: { cellWidth: 22, halign: 'right' },
+            5: { cellWidth: 22, halign: 'right' },
+          },
+        });
+      } else {
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8,
+            cellPadding: 2,
+            lineColor: [252, 211, 77],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '3 ITENS VAZIO E EM ROTA',
+                colSpan: 4,
+                styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO DO MATERIAL', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+              { content: 'SITUAÇÃO', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold' } },
+              { content: 'QUANTIDADE', styles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.vazioRotaRows.map(r => [
+            { content: `[${r.code}]`, styles: { font: 'courier' } },
+            r.name,
+            { content: r.situation, styles: { fontStyle: 'bold', textColor: [146, 64, 14] } },
+            { content: `${r.quantity} un`, styles: { fontStyle: 'bold', halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Vazio e Em Rota:', colSpan: 3, styles: { fillColor: [254, 243, 199], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalMatVazioRota} un`, styles: { fillColor: [254, 243, 199], textColor: [146, 64, 14], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 30 },
+            2: { cellWidth: 32 },
+            3: { cellWidth: 30, halign: 'right' },
+          },
+        });
+      }
+      y = getLastAutoTableY(doc, y) + 5;
+    }
+  }
+
+  // -------------------------------------------------------------
+  // DETALHAMENTO: ESTOQUE DE EQUIPAMENTOS (DETALHADO)
+  // -------------------------------------------------------------
+  if (selectedStock === 'equipamentos' || selectedStock === 'ambos') {
+    y = drawSectionBanner(
+      y + 1,
+      isRecontagem
+        ? 'ESTOQUE DE EQUIPAMENTOS (RECONTAGEM - COMPARATIVO)'
+        : 'ESTOQUE DE EQUIPAMENTOS (DETALHADO)',
+      [15, 23, 42]
+    );
+
+    if (isRecontagem) {
+      if (data.emEstoqueEquips.length > 0) {
+        const diffEmEst = data.emEstoqueEquips.length - data.subtotalInitialEmEstoque;
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 7.8,
+            cellPadding: 2,
+            lineColor: [110, 231, 183],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '1 EQUIPAMENTOS EM ESTOQUE',
+                colSpan: 6,
+                styles: { fillColor: [167, 243, 208], textColor: [6, 95, 70], fontStyle: 'bold', fontSize: 8.5 },
+              },
+            ],
+            [
+              { content: 'CÓDIGO', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
+              { content: 'PATRIMÔNIO', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
+              { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold' } },
+              { content: '1ª CONT.', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold', halign: 'right' } },
+              { content: 'RECONT.', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold', halign: 'right' } },
+              { content: 'DIFERENÇA', styles: { fillColor: [240, 253, 244], textColor: [22, 101, 52], fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          body: data.emEstoqueEquips.map(eq => [
+            { content: eq.code ? `[${eq.code}]` : '-', styles: { font: 'courier' } },
+            { content: eq.patrimony, styles: { fontStyle: 'bold', textColor: [4, 120, 87] } },
+            eq.fullNameWithSpecs,
+            { content: `${eq.initialQuantity} un`, styles: { halign: 'right' } },
+            { content: `${eq.recountQuantity} un`, styles: { fontStyle: 'bold', textColor: [4, 120, 87], halign: 'right' } },
+            { content: formatDiff(eq.difference), styles: { fontStyle: 'bold', textColor: getDiffPdfColor(eq.difference), halign: 'right' } },
+          ]) as RowInput[],
+          foot: [
+            [
+              { content: 'Subtotal Em Estoque:', colSpan: 3, styles: { fillColor: [209, 250, 229], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalInitialEmEstoque} un`, styles: { fillColor: [209, 250, 229], textColor: [51, 65, 85], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.emEstoqueEquips.length} un`, styles: { fillColor: [209, 250, 229], textColor: [4, 120, 87], fontStyle: 'bold', halign: 'right' } },
+              { content: formatDiff(diffEmEst), styles: { fillColor: [209, 250, 229], textColor: getDiffPdfColor(diffEmEst), fontStyle: 'bold', halign: 'right' } },
+            ],
+          ],
+          columnStyles: {
+            0: { cellWidth: 20 },
+            1: { cellWidth: 25 },
+            3: { cellWidth: 22, halign: 'right' },
+            4: { cellWidth: 20, halign: 'right' },
+            5: { cellWidth: 21, halign: 'right' },
+          },
+        });
+        y = getLastAutoTableY(doc, y) + 4;
+      }
+
+      if (data.naoConstaEquips.length > 0) {
+        const diffNaoConsta = 0 - data.subtotalInitialNaoConsta;
+        autoTable(doc, {
+          startY: y,
+          margin: { left: margin, right: margin },
+          theme: 'grid',
+          showHead: 'everyPage',
+          showFoot: 'lastPage',
+          styles: {
+            font: 'helvetica',
+            fontSize: 7.8,
+            cellPadding: 2,
+            lineColor: [252, 165, 165],
+            lineWidth: 0.25,
+            textColor: [30, 41, 59],
+            valign: 'middle',
+          },
+          head: [
+            [
+              {
+                content: '2 EQUIPAMENTOS NÃO CONSTAM EM ESTOQUE',
+                colSpan: 6,
                 styles: { fillColor: [254, 202, 202], textColor: [153, 27, 27], fontStyle: 'bold', fontSize: 8.5 },
               },
             ],
@@ -2268,22 +3259,33 @@ function buildPdfWithLogo(
               { content: 'CÓDIGO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
               { content: 'PATRIMÔNIO', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
               { content: 'DESCRIÇÃO / ESPECIFICAÇÕES', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold' } },
+              { content: '1ª CONT.', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
+              { content: 'RECONT.', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
+              { content: 'DIFERENÇA', styles: { fillColor: [255, 245, 245], textColor: [127, 29, 29], fontStyle: 'bold', halign: 'right' } },
             ],
           ],
           body: data.naoConstaEquips.map(eq => [
             { content: eq.code ? `[${eq.code}]` : '-', styles: { font: 'courier' } },
             { content: eq.patrimony, styles: { fontStyle: 'bold', textColor: [185, 28, 28] } },
             eq.fullNameWithSpecs,
+            { content: `${eq.initialQuantity} un`, styles: { halign: 'right' } },
+            { content: `${eq.recountQuantity} un`, styles: { fontStyle: 'bold', textColor: [185, 28, 28], halign: 'right' } },
+            { content: formatDiff(eq.difference), styles: { fontStyle: 'bold', textColor: getDiffPdfColor(eq.difference), halign: 'right' } },
           ]) as RowInput[],
           foot: [
             [
-              { content: 'Subtotal Não Constam em Estoque:', colSpan: 2, styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
-              { content: `${data.naoConstaEquips.length} un`, styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' } },
+              { content: 'Subtotal Não Constam em Estoque:', colSpan: 3, styles: { fillColor: [254, 226, 226], textColor: [15, 23, 42], fontStyle: 'bold', halign: 'right' } },
+              { content: `${data.subtotalInitialNaoConsta} un`, styles: { fillColor: [254, 226, 226], textColor: [51, 65, 85], fontStyle: 'bold', halign: 'right' } },
+              { content: `0 un`, styles: { fillColor: [254, 226, 226], textColor: [185, 28, 28], fontStyle: 'bold', halign: 'right' } },
+              { content: formatDiff(diffNaoConsta), styles: { fillColor: [254, 226, 226], textColor: getDiffPdfColor(diffNaoConsta), fontStyle: 'bold', halign: 'right' } },
             ],
           ],
           columnStyles: {
-            0: { cellWidth: 26 },
-            1: { cellWidth: 32 },
+            0: { cellWidth: 20 },
+            1: { cellWidth: 25 },
+            3: { cellWidth: 22, halign: 'right' },
+            4: { cellWidth: 20, halign: 'right' },
+            5: { cellWidth: 21, halign: 'right' },
           },
         });
         y = getLastAutoTableY(doc, y) + 4;
@@ -2532,7 +3534,8 @@ function buildPdfWithLogo(
     .replace(/[^a-zA-Z0-9_-]/g, '');
   const branchSlug = resolveBranchSlug(params.branch);
   const stockSlug = selectedStock.toUpperCase();
-  const fileName = `Relatorio_Estoque_${branchSlug}_${safeDate}_${stockSlug}.pdf`;
+  const reportPrefix = isRecontagem ? 'Relatorio_Recontagem' : 'Relatorio_Estoque';
+  const fileName = `${reportPrefix}_${branchSlug}_${safeDate}_${stockSlug}.pdf`;
 
   const blob = doc.output('blob');
   const file = new File([blob], fileName, { type: 'application/pdf' });
